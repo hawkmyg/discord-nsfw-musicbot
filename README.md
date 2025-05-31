@@ -1,45 +1,56 @@
-# Discord Moderation & Music Bot
+# RAGE-NSFW Discord Bot
 
-A multipurpose Discord bot featuring **image moderation (NSFW, offensive, weapons/drugs detection)** and a **YouTube music player** with playlist support.
+A multipurpose Discord bot featuring **automatic image moderation** (NSFW, offensive, weapons/drugs detection) and a **fancy YouTube music player** with playlist support, live volume buttons, and stylish Now Playing embeds.
 
 ---
 
-## Features
+## ✨ Features
 
 ### 🛡️ Moderation
 
 - **Automatic NSFW/Offensive Image Moderation**  
-  Scans all posted images for:
+  Scans posted images for:
   - Nudity (raw & partial)
   - Weapons/Ammo/Drugs
   - Offensive content
 - **Customizable Per-Category Checks**  
-  Enable/disable moderation for each category independently.
+  Enable/disable moderation for each type independently.
 - **Adjustable Detection Thresholds**  
-  Fine-tune sensitivity for nudity, offensive, and other categories.
-- **Admin Commands for Moderation Settings**
+  Fine-tune sensitivity for each category.
+- **Admin Moderation Commands**
 - **Automatic Message Deletion & User Notification**  
-  When violating images are detected.
+  When a violation is detected.
 
-### 🎵 Music
+---
+
+### 🎵 Fancy Music Player
 
 - **/play**  
   Play or queue YouTube songs by link, keywords, or *entire playlists*.
 - **/queue**  
   Show the current music queue.
-- **Control Buttons**  
-  Pause, resume, skip, and stop playback via interactive buttons.
+- **Fancy Now Playing Embed**  
+  - Shows song title (as a link), who requested it, and the current volume.
+  - Looks great and updates live!
+- **Control Buttons** *(max 5 per message, always visible for all users)*:
+  - **Pause/Resume** (single toggle button)
+  - **Skip**
+  - **Stop**
+  - **Volume Down (🔉) / Volume Up (🔊)**
+    - Instantly adjust volume from 5% to 200%, live!
 - **Song Selection Menu**  
   Jump to or view any song in the queue.
 
-### ⚙️ Admin Settings Commands
+---
+
+### ⚙️ Moderation/Settings Commands
 
 - **/setthreshold**  
-  Set the detection threshold for each moderation category (0–1).
+  Set detection threshold for each moderation category (0–1, lower = more sensitive).
 - **/setmoderation**  
-  Enable or disable a content moderation category.
+  Enable or disable a moderation category.
 - **/setcheck**  
-  Directly enable or disable any moderation check (raw, partial, offensive, etc).
+  Directly enable/disable individual checks (e.g., raw, partial, offensive).
 - **/showmoderation**  
   View current moderation settings.
 - **/commands**  
@@ -47,7 +58,7 @@ A multipurpose Discord bot featuring **image moderation (NSFW, offensive, weapon
 
 ---
 
-## Example Settings (`moderation_settings.json`)
+## 🎚️ Example Settings (`moderation_settings.json`)
 
 ```json
 {
@@ -69,27 +80,28 @@ A multipurpose Discord bot featuring **image moderation (NSFW, offensive, weapon
 
 - Each server (guild) has its own settings section (keyed by guild ID).
 - **checks**: Enable (`true`) or disable (`false`) each moderation category.
-- **thresholds**: Set the probability threshold (0–1, lower is stricter).
+- **thresholds**: Set the probability threshold (`0`–`1`), lower is stricter.
 
 ---
 
-## Usage
+## 🚀 Usage
 
 - **Music:**  
   `/play <YouTube link | keywords | playlist>`  
   `/queue`  
-  Use the interactive buttons for pause/resume/skip/stop.
+  Use the interactive buttons below the Now Playing message:  
+  ⏯ Pause/Resume • ⏭ Skip • ⏹ Stop • 🔉 Volume Down • 🔊 Volume Up
 - **Moderation Settings (admin only):**  
   `/setthreshold <category> <value>`  
   `/setmoderation <category> <true|false>`  
   `/setcheck <category> <true|false>`  
   `/showmoderation`
 - **Help:**  
-  `/commands` or `!commands` (prefix)
+  `/commands` (shows all features and usage)
 
 ---
 
-## Requirements
+## 📦 Requirements
 
 - Node.js v18+
 - Discord bot token
@@ -98,6 +110,10 @@ A multipurpose Discord bot featuring **image moderation (NSFW, offensive, weapon
 
 ---
 
-## License
+## 📝 License
 
 MIT
+
+---
+
+**Enjoy your secure, stylish, and music-filled Discord experience!**
