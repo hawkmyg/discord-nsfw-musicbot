@@ -1,296 +1,353 @@
-import {
-  joinVoiceChannel,
-  createAudioPlayer,
-  createAudioResource,
-  getVoiceConnection,
-  AudioPlayerStatus,
-} from "@discordjs/voice";
-//import ytdl from "ytdl-core";
-//USE the following because above ytdl-core is broken
-import ytdl from "@distube/ytdl-core";
+import { Client, GatewayIntentBits, Partials, REST, Routes, Events, PermissionsBitField } from 'discord.js';
+import dotenv from 'dotenv';
+import fs from 'fs/promises';
+import path from 'path';
+import nsfwCheck from './nsfw.js';
+import { playCommand, handleMusicButton, handleMusicMenu, commandsCommand } from './music.js';
 
-import play from "play-dl";
-import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  StringSelectMenuBuilder,
-} from "discord.js";
+dotenv.config();
 
-// Strong YouTube URL validation regex
-const ytRegex =
-  /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}/;
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
+  ],
+  partials: [Partials.Channel, Partials.Message]
+});
 
-const queue = new Map(); // guildId -> [ {url, title, requestedBy} ]
-const players = new Map(); // guildId -> audioPlayer
-
-export async function playCommand(client, interaction) {
-  const query = interaction.options.getString("query");
-  const voice = interaction.member.voice.channel;
-  if (!voice)
-    return interaction.reply({
-      content: "Join a voice channel first!",
-      flags: 1 << 6,
-    });
-
-  if (!query || typeof query !== "string" || !query.trim()) {
-    return interaction.reply({
-      content: "You must provide a valid YouTube link or search keywords.",
-      flags: 1 << 6,
-    });
+const SETTINGS_FILE = path.resolve('./moderation_settings.json');
+const DEFAULT_SETTINGS = {
+  checks: {
+    nudity_raw: true,
+    nudity_partial: true,
+    wad: true,
+    offensive: true,
+  },
+  thresholds: {
+    nudity_raw: 0.7,
+    nudity_partial: 0.7,
+    offensive_prob: 0.7,
   }
+};
+let moderationSettings = {};
 
-  await interaction.deferReply();
-
-  // Try to find video by link or keywords
-  let yt_url = query;
-  let yt_title = null;
+async function loadSettings() {
   try {
-    if (!ytRegex.test(query)) {
-      // Use play-dl to search by keywords
-      const searchResults = await play.search(query, { limit: 1 });
-      if (!searchResults || !searchResults[0] || !searchResults[0].url) {
-        throw new Error("No results found for your query.");
+    const data = await fs.readFile(SETTINGS_FILE, 'utf8');
+    moderationSettings = JSON.parse(data);
+  } catch (e) {
+    moderationSettings = {};
+  }
+}
+
+async function saveSettings() {
+  await fs.writeFile(SETTINGS_FILE, JSON.stringify(moderationSettings, null, 2));
+}
+
+function getGuildSettings(guildId) {
+  if (!moderationSettings[guildId]) {
+    moderationSettings[guildId] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  } else {
+    moderationSettings[guildId].checks = { ...DEFAULT_SETTINGS.checks, ...moderationSettings[guildId].checks };
+    moderationSettings[guildId].thresholds = { ...DEFAULT_SETTINGS.thresholds, ...moderationSettings[guildId].thresholds };
+  }
+  return moderationSettings[guildId];
+}
+
+// Register Slash Commands
+const commands = [
+  {
+    name: 'nsfwcheck',
+    description: 'Check if an image is NSFW',
+    options: [{
+      name: 'image',
+      type: 11, // Attachment
+      description: 'Image to check',
+      required: true
+    }]
+  },
+  {
+    name: 'play',
+    description: 'Play a YouTube song',
+    options: [{
+      name: 'query',
+      type: 3, // String
+      description: 'YouTube link or keywords',
+      required: true
+    }]
+  },
+  {
+    name: 'setmoderation',
+    description: 'Enable or disable specific content checks',
+    options: [
+      {
+        name: 'category',
+        type: 3, // String
+        description: 'Check to enable/disable',
+        required: true,
+        choices: [
+          { name: 'Nudity (raw)', value: 'nudity_raw' },
+          { name: 'Nudity (partial)', value: 'nudity_partial' },
+          { name: 'Weapons/Ammo/Drugs', value: 'wad' },
+          { name: 'Offensive', value: 'offensive' }
+        ]
+      },
+      {
+        name: 'enabled',
+        type: 5, // Boolean
+        description: 'Enable this check? True/False',
+        required: true
       }
-      yt_url = searchResults[0].url;
-    }
-    // Validate with ytdl-core or fallback to play-dl
-    try {
-      const info = await ytdl.getBasicInfo(yt_url);
-      yt_title = info.videoDetails.title;
-      yt_url = info.videoDetails.video_url;
-    } catch (e) {
-      // Fallback: Use play-dl to fetch the title if ytdl-core fails
-      const info = await play.video_basic_info(yt_url);
-      yt_title = info.video_details.title;
-      yt_url = info.video_details.url;
+    ]
+  },
+  {
+    name: 'setthreshold',
+    description: 'Set detection threshold for a category',
+    options: [
+      {
+        name: 'threshold',
+        type: 3, // String
+        description: 'Which threshold to set',
+        required: true,
+        choices: [
+          { name: 'Nudity (raw)', value: 'nudity_raw' },
+          { name: 'Nudity (partial)', value: 'nudity_partial' },
+          { name: 'Offensive (prob)', value: 'offensive_prob' }
+        ]
+      },
+      {
+        name: 'value',
+        type: 10, // Number
+        description: 'Threshold value (0-1)',
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'setcheck',
+    description: 'Manually enable or disable any moderation check',
+    options: [
+      {
+        name: 'check',
+        type: 3, // String
+        description: 'The check key to enable/disable',
+        required: true,
+        choices: [
+          { name: 'Nudity (raw)', value: 'nudity_raw' },
+          { name: 'Nudity (partial)', value: 'nudity_partial' },
+          { name: 'Weapons/Ammo/Drugs', value: 'wad' },
+          { name: 'Offensive', value: 'offensive' }
+        ]
+      },
+      {
+        name: 'enabled',
+        type: 5, // Boolean
+        description: 'Enable this check? True/False',
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'showmoderation',
+    description: 'Show current moderation settings',
+    options: []
+  },
+  {
+    name: 'commands',
+    description: 'List all music bot commands and info'
+  }
+];
+
+// Use GUILD_ID from .env for instant command registration
+const GUILD_ID = process.env.GUILD_ID;
+
+// Register slash commands on startup
+client.once(Events.ClientReady, async (c) => {
+  console.log(`Logged in as ${c.user.tag}`);
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    if (GUILD_ID) {
+      await rest.put(
+        Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+        { body: commands }
+      );
+      console.log(`Slash commands registered to guild: ${GUILD_ID}`);
+    } else {
+      await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: commands }
+      );
+      console.log('Slash commands registered globally (may take up to an hour to appear).');
     }
   } catch (e) {
-    return interaction.editReply("Failed to fetch YouTube info: " + e.message);
+    console.error('Slash command registration error:', e);
   }
+});
 
-  const guildId = interaction.guildId;
-  if (!queue.has(guildId)) queue.set(guildId, []);
-  queue.get(guildId).push({
-    url: yt_url,
-    title: yt_title,
-    requestedBy: interaction.user.username,
-  });
-  // LOG for debugging
-  console.log("[QUEUE ADD]", yt_url);
-
-  await interaction.editReply({
-    content: `Queued: **${yt_title}**`,
-    components: [musicButtons(), musicMenu(queue.get(guildId))],
-  });
-
-  // Only start playback if not already playing
-  if (
-    !players.has(guildId) ||
-    players.get(guildId)._state.status === AudioPlayerStatus.Idle
-  ) {
-    await playNext(interaction, guildId, voice);
+// Handle slash commands and music interaction in one event handler
+client.on(Events.InteractionCreate, async interaction => {
+  // Music button & menu handlers
+  if (interaction.isButton()) {
+    await handleMusicButton(interaction);
+    return;
   }
-}
-
-export async function queueCommand(client, interaction) {
-  const guildId = interaction.guildId;
-  const q = queue.get(guildId);
-
-  if (!q || q.length === 0) {
-    return interaction.reply({ content: "The queue is empty.", flags: 1 << 6 });
-  }
-
-  const queueList = q
-    .map(
-      (track, i) =>
-        `${i === 0 ? "**Now Playing:**" : `**#${i}:**`} ${track.title} _(requested by ${track.requestedBy})_`
-    )
-    .join("\n");
-
-  await interaction.reply({
-    content: `🎶 **Music Queue:**\n${queueList}`,
-    flags: 0, // not ephemeral, visible to all
-  });
-}
-
-export function musicButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("pause")
-      .setLabel("⏸ Pause")
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId("resume")
-      .setLabel("▶️ Resume")
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId("skip")
-      .setLabel("⏭ Skip")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("stop")
-      .setLabel("⏹ Stop")
-      .setStyle(ButtonStyle.Danger)
-  );
-}
-
-export function musicMenu(q) {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId("select_song")
-      .setPlaceholder("Queue")
-      .addOptions(
-        q.map((track, i) => ({
-          label: `${i + 1}. ${track.title}`,
-          value: String(i),
-        }))
-      )
-  );
-}
-
-async function playNext(interaction, guildId, voice) {
-  const q = queue.get(guildId);
-  if (!q || q.length === 0) {
-    players.delete(guildId);
-    getVoiceConnection(guildId)?.destroy();
+  if (interaction.isStringSelectMenu()) {
+    await handleMusicMenu(interaction);
     return;
   }
 
-  const track = q[0];
-  // LOG for debugging
-  console.log("[PLAYNEXT] Attempting", JSON.stringify(track));
+  // Only handle slash commands below
+  if (!interaction.isChatInputCommand()) return;
 
-  if (
-    !track.url ||
-    typeof track.url !== "string" ||
-    !ytRegex.test(track.url)
-  ) {
-    await interaction.followUp({
-      content: `Track "${track.title || "Unknown"}" has an invalid or unsupported URL and will be skipped. URL: ${track.url}`,
-      flags: 1 << 6,
-    });
-    q.shift();
-    return playNext(interaction, guildId, voice);
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: "Commands must be run in a server.", flags: 1 << 6 });
+    return;
+  }
+  await loadSettings();
+
+  if (interaction.commandName === 'nsfwcheck') {
+    const attachment = interaction.options.getAttachment('image');
+    const settings = getGuildSettings(guildId);
+    await nsfwCheck(interaction, attachment.url, settings);
+    return;
   }
 
-  let resource;
-  let used = "ytdl-core";
-  try {
-    // Try ytdl-core first
-    let ytStream = ytdl(track.url, {
-      filter: "audioonly",
-      quality: "highestaudio",
-      highWaterMark: 1 << 25,
-    });
-    resource = createAudioResource(ytStream, { inputType: "arbitrary" });
-  } catch (e1) {
-    used = "play-dl";
-    try {
-      // If ytdl fails, fallback to play-dl
-      const { stream } = await play.video_stream(track.url);
-      resource = createAudioResource(stream, { inputType: "arbitrary" });
-    } catch (e2) {
-      await interaction.followUp({
-        content: `Failed to stream "${track.title}":\n- ytdl-core error: ${e1.message}\n- play-dl error: ${e2.message}`,
-      });
-      q.shift();
-      return playNext(interaction, guildId, voice);
+  if (interaction.commandName === 'play') {
+    await playCommand(client, interaction);
+    return;
+  }
+
+  if (interaction.commandName === 'commands') {
+    await commandsCommand(client, interaction);
+    return;
+  }
+
+  if (['setmoderation', 'setthreshold', 'setcheck'].includes(interaction.commandName)) {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      await interaction.reply({ content: "Only admins can change moderation settings.", flags: 1 << 6 });
+      return;
     }
   }
-  console.log(`[STREAM] Using: ${used}`);
 
-  let connection = getVoiceConnection(guildId);
-  if (!connection) {
-    connection = joinVoiceChannel({
-      channelId: voice.id,
-      guildId,
-      adapterCreator: voice.guild.voiceAdapterCreator,
-    });
-    connection.on("stateChange", (oldState, newState) => {
-      console.log(
-        `[VoiceConnection] ${oldState.status} -> ${newState.status}`
-      );
-    });
+  if (interaction.commandName === 'setmoderation') {
+    const category = interaction.options.getString('category');
+    const enabled = interaction.options.getBoolean('enabled');
+    const settings = getGuildSettings(guildId);
+    settings.checks[category] = enabled;
+    await saveSettings();
+    await interaction.reply(`Moderation for **${category}** set to **${enabled}**.`);
+    return;
   }
 
-  let player = players.get(guildId);
-  if (!player) {
-    player = createAudioPlayer();
-    players.set(guildId, player);
-    player.on("stateChange", (oldState, newState) => {
-      console.log(`[AudioPlayer] ${oldState.status} -> ${newState.status}`);
-    });
-    player.on("error", (error) => {
-      console.error("[AudioPlayer Error]:", error);
-      queue.get(guildId)?.shift();
-      playNext(interaction, guildId, voice);
-    });
-    player.on(AudioPlayerStatus.Idle, () => {
-      queue.get(guildId)?.shift();
-      playNext(interaction, guildId, voice);
-    });
+  if (interaction.commandName === 'setcheck') {
+    const check = interaction.options.getString('check');
+    const enabled = interaction.options.getBoolean('enabled');
+    const settings = getGuildSettings(guildId);
+    if (settings.checks[check] === undefined) {
+      await interaction.reply({ content: `Check key "${check}" does not exist.`, flags: 1 << 6 });
+      return;
+    }
+    settings.checks[check] = enabled;
+    await saveSettings();
+    await interaction.reply(`Check **${check}** set to **${enabled}**.`);
+    return;
   }
 
-  connection.subscribe(player);
-  player.play(resource);
-}
-
-export async function handleMusicButton(interaction) {
-  const guildId = interaction.guildId;
-  const player = players.get(guildId);
-  if (!player)
-    return interaction.reply({
-      content: "Nothing is playing.",
-      flags: 1 << 6,
-    });
-
-  if (interaction.customId === "pause") {
-    player.pause();
-    await interaction.reply({ content: "Paused.", flags: 1 << 6 });
-  }
-  if (interaction.customId === "resume") {
-    player.unpause();
-    await interaction.reply({ content: "Resumed.", flags: 1 << 6 });
-  }
-  if (interaction.customId === "skip") {
-    queue.get(guildId)?.shift();
-    player.stop();
-    await interaction.reply({ content: "Skipped.", flags: 1 << 6 });
-  }
-  if (interaction.customId === "stop") {
-    queue.set(guildId, []);
-    player.stop();
-    getVoiceConnection(guildId)?.destroy();
-    players.delete(guildId);
-    await interaction.reply({
-      content: "Stopped and disconnected.",
-      flags: 1 << 6,
-    });
-  }
-}
-
-export async function handleMusicMenu(interaction) {
-  const guildId = interaction.guildId;
-  const selected = interaction.values[0];
-  const q = queue.get(guildId);
-
-  if (!q || q.length === 0) {
-    return interaction.reply({ content: "Queue empty.", flags: 1 << 6 });
+  if (interaction.commandName === 'setthreshold') {
+    const threshold = interaction.options.getString('threshold');
+    const value = interaction.options.getNumber('value');
+    if (value < 0 || value > 1) {
+      await interaction.reply({ content: "Threshold value must be between 0 and 1.", flags: 1 << 6 });
+      return;
+    }
+    const settings = getGuildSettings(guildId);
+    settings.thresholds[threshold] = value;
+    // If threshold is 0, disable check. If threshold > 0, enable check.
+    if (settings.checks[threshold] !== undefined) {
+      if (value === 0) {
+        settings.checks[threshold] = false;
+      } else {
+        settings.checks[threshold] = true;
+      }
+    }
+    await saveSettings();
+    let msg = `Threshold for **${threshold}** set to **${value}**.`;
+    if (value === 0 && settings.checks[threshold] === false) {
+      msg += `\n:information_source: Check **${threshold}** has been disabled because threshold is 0.`;
+    }
+    if (value > 0 && settings.checks[threshold] === true) {
+      msg += `\n:information_source: Check **${threshold}** has been enabled because threshold is above 0.`;
+    }
+    await interaction.reply(msg);
+    return;
   }
 
-  const idx = Number(selected);
-  if (isNaN(idx) || idx < 0 || idx >= q.length) {
-    return interaction.reply({ content: "Invalid selection.", flags: 1 << 6 });
+  if (interaction.commandName === 'showmoderation') {
+    const settings = getGuildSettings(guildId);
+    let msg = '**Current moderation settings:**\n';
+    for (const cat in settings.checks) {
+      msg += `- ${cat}: ${settings.checks[cat]}\n`;
+    }
+    msg += '\n**Thresholds:**\n';
+    for (const th in settings.thresholds) {
+      msg += `- ${th}: ${settings.thresholds[th]}\n`;
+    }
+    await interaction.reply(msg);
+    return;
+  }
+});
+
+// !commands message listener for prefix help + auto NSFW scan for images
+client.on('messageCreate', async message => {
+  // Ignore messages from bots
+  if (message.author.bot) return;
+
+  // !commands text help
+  if (message.content.trim().toLowerCase() === '!commands') {
+    message.channel.send(
+      "**Available Music Bot Commands:**\n" +
+      "• `/play <YouTube link or keywords>` – Play or queue a YouTube song by link or search keywords.\n" +
+      "• `/queue` – Show the current music queue.\n" +
+      "• `/commands` – Show this list of bot commands (slash).\n" +
+      "• `!commands` – Show this list of bot commands (prefix).\n" +
+      "• Use the music control buttons (Pause/Resume/Skip/Stop) under the music message.\n" +
+      "• Use the song selection menu to view/select tracks."
+    );
+    return;
   }
 
-  const track = q[idx];
-  if (!track) {
-    return interaction.reply({ content: "Track not found.", flags: 1 << 6 });
-  }
+  // ------------ AUTO NSFW SCAN FOR IMAGES -------------
+  if (message.attachments.size > 0) {
+    const imageAttachments = message.attachments.filter(att => att.contentType && att.contentType.startsWith('image/'));
+    if (imageAttachments.size === 0) return;
 
-  await interaction.reply({
-    content: `Selected: **${track.title}** (requested by ${track.requestedBy})`,
-    flags: 1 << 6,
-  });
-}
+    const guildId = message.guildId;
+    if (!guildId) return; // If DM, skip
+
+    await loadSettings();
+    const settings = getGuildSettings(guildId);
+
+    for (const [, attachment] of imageAttachments) {
+      try {
+        await nsfwCheck(
+          { 
+            deferReply: async () => {},
+            editReply: async () => {},
+            channel: message.channel
+          },
+          attachment.url,
+          settings,
+          { isAuto: true, message }
+        );
+      } catch (err) {
+        console.error('Error auto-NSFW scanning:', err);
+      }
+    }
+  }
+});
+
+client.login(process.env.DISCORD_TOKEN);

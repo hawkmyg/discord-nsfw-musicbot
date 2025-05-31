@@ -1,14 +1,14 @@
 {
   "530460356997414912": {
     "checks": {
-      "nudity": true,
-      "wad": true,
-      "offensive": true,
-      "drugs": true
+      "nudity_raw": true,
+      "nudity_partial": true,
+      "wad": false,
+      "offensive": true
     },
     "thresholds": {
-      "nudity_raw": 1,
-      "nudity_partial": 0.7,
+      "nudity_raw": 0.5,
+      "nudity_partial": 0.6,
       "offensive_prob": 0.7
     }
   }
