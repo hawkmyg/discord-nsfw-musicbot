@@ -1,119 +1,140 @@
-# RAGE-NSFW Discord Bot
+# RAGE-NSFW Music & Moderation Discord Bot
 
-A multipurpose Discord bot featuring **automatic image moderation** (NSFW, offensive, weapons/drugs detection) and a **fancy YouTube music player** with playlist support, live volume buttons, and stylish Now Playing embeds.
-
----
-
-## ✨ Features
-
-### 🛡️ Moderation
-
-- **Automatic NSFW/Offensive Image Moderation**  
-  Scans posted images for:
-  - Nudity (raw & partial)
-  - Weapons/Ammo/Drugs
-  - Offensive content
-- **Customizable Per-Category Checks**  
-  Enable/disable moderation for each type independently.
-- **Adjustable Detection Thresholds**  
-  Fine-tune sensitivity for each category.
-- **Admin Moderation Commands**
-- **Automatic Message Deletion & User Notification**  
-  When a violation is detected.
+A modern, feature-rich Discord bot for music playback and image moderation.  
+Supports fancy queue paging, NSFW image scanning, moderation settings per guild, and interactive controls.
 
 ---
 
-### 🎵 Fancy Music Player
+## 🎵 Music Features
 
-- **/play**  
-  Play or queue YouTube songs by link, keywords, or *entire playlists*.
+- **/play `<YouTube link or keywords>`**  
+  Play or queue a YouTube song by link, search, or playlist.  
+  Supports both direct URLs and keyword search.
+
 - **/queue**  
-  Show the current music queue.
-- **Fancy Now Playing Embed**  
-  - Shows song title (as a link), who requested it, and the current volume.
-  - Looks great and updates live!
-- **Control Buttons** *(max 5 per message, always visible for all users)*:
-  - **Pause/Resume** (single toggle button)
-  - **Skip**
-  - **Stop**
-  - **Volume Down (🔉) / Volume Up (🔊)**
-    - Instantly adjust volume from 5% to 200%, live!
-- **Song Selection Menu**  
-  Jump to or view any song in the queue.
+  View the current song queue with **fancy paginated navigation** (Next/Back buttons).  
+  See what's now playing and easily browse what's next!
 
----
-
-### ⚙️ Moderation/Settings Commands
-
-- **/setthreshold**  
-  Set detection threshold for each moderation category (0–1, lower = more sensitive).
-- **/setmoderation**  
-  Enable or disable a moderation category.
-- **/setcheck**  
-  Directly enable/disable individual checks (e.g., raw, partial, offensive).
-- **/showmoderation**  
-  View current moderation settings.
 - **/commands**  
-  See all available bot commands.
+  See all available bot commands and usage info.
+
+- **Interactive Music Controls**  
+  ⏯️ Pause/Resume, ⏭️ Skip, 🛑 Stop, 🔉 Volume Down, 🔊 Volume Up — directly from the Discord chat via buttons.
+
+- **Song Selection Menu**  
+  Quickly view and select queued tracks via dropdown.
 
 ---
 
-## 🎚️ Example Settings (`moderation_settings.json`)
+## 🛡️ Moderation Features
 
-```json
-{
-  "123456789012345678": {
-    "checks": {
-      "nudity_raw": true,
-      "nudity_partial": false,
-      "wad": true,
-      "offensive": true
-    },
-    "thresholds": {
-      "nudity_raw": 0.7,
-      "nudity_partial": 0.4,
-      "offensive_prob": 0.6
-    }
-  }
-}
+- **NSFW Image Scanning**  
+  Automatic and on-demand scanning using Sightengine and custom thresholds.
+  - `/nsfwcheck <image>`: Check if an image is NSFW.
+  - **Auto-scan:** All images uploaded to the server are auto-scanned with instant results in the channel.
+
+- **Content Moderation Settings**  
+  Granular per-guild controls for:
+  - Nudity (raw/partial)
+  - Weapons/Ammo/Drugs
+  - Offensive Content
+
+  Easily enable/disable checks and adjust thresholds via slash commands.
+
+- **Sightengine Model Selection**  
+  Choose which Sightengine moderation models to activate for your server.
+
+---
+
+## 🛠️ Admin Settings Commands
+
+- **/setmoderation `<category>` `<enabled>`**  
+  Enable or disable checks for a content category.
+
+- **/setthreshold `<threshold>` `<value>`**  
+  Set detection thresholds for categories. If set to `0`, the check is auto-disabled.
+
+- **/setcheck `<check>` `<enabled>`**  
+  Manually enable/disable any moderation check key.
+
+- **/showmoderation**  
+  Display current moderation settings, thresholds, and Sightengine models.
+
+---
+
+## 🧩 Example Settings Output
+
+```
+**Current moderation settings:**
+- nudity_raw: true
+- nudity_partial: false
+- wad: true
+- offensive: true
+
+**Thresholds:**
+- nudity_raw: 0.7
+- nudity_partial: 0.7
+- offensive_prob: 0.7
+
+**Sightengine Models:**
+- nudity
+- wad
 ```
 
-- Each server (guild) has its own settings section (keyed by guild ID).
-- **checks**: Enable (`true`) or disable (`false`) each moderation category.
-- **thresholds**: Set the probability threshold (`0`–`1`), lower is stricter.
+---
+
+## ✨ Example Music Queue Paging
+
+> Using `/queue` shows a paginated ephemeral message:
+
+```
+🎶 **Music Queue (Page 1/3):**
+**Now Playing:** Coolio - Gangsta's Paradise _(requested by hawkmyg)_
+**#1:** Dr. Dre - Still D.R.E. _(requested by hawkmyg)_
+**#2:** 2Pac - Hit 'Em Up _(requested by hawkmyg)_
+**#3:** The Notorious B.I.G. - Juicy _(requested by hawkmyg)_
+...and more!
+
+⬅️ Back | Next ➡️
+```
 
 ---
 
-## 🚀 Usage
+## ⚙️ Environment Variables
 
-- **Music:**  
-  `/play <YouTube link | keywords | playlist>`  
-  `/queue`  
-  Use the interactive buttons below the Now Playing message:  
-  ⏯ Pause/Resume • ⏭ Skip • ⏹ Stop • 🔉 Volume Down • 🔊 Volume Up
-- **Moderation Settings (admin only):**  
-  `/setthreshold <category> <value>`  
-  `/setmoderation <category> <true|false>`  
-  `/setcheck <category> <true|false>`  
-  `/showmoderation`
-- **Help:**  
-  `/commands` (shows all features and usage)
+- `DISCORD_TOKEN` — your bot token
+- `GUILD_ID` *(optional)* — for instant slash command registration (development only)
+- (Sightengine API keys if using image moderation)
 
 ---
 
-## 📦 Requirements
+## 🚀 Quick Start
 
-- Node.js v18+
-- Discord bot token
-- Sightengine API key (for image moderation)
-- YouTube Data/API access
+1. **Install dependencies:**  
+   `npm install`
+
+2. **Create `.env` file:**  
+   ```
+   DISCORD_TOKEN=your_token
+   GUILD_ID=your_server_id   # for dev only
+   ```
+
+3. **Run the bot:**  
+   `node bot.js`
 
 ---
 
-## 📝 License
+## 🎉 Credits
 
-MIT
+- [discord.js](https://discord.js.org/)
+- [@discordjs/voice](https://discord.js.org/#/docs/voice/main/general/welcome)
+- [play-dl](https://github.com/Androz2091/play-dl)
+- [Sightengine](https://sightengine.com/)
 
 ---
 
-**Enjoy your secure, stylish, and music-filled Discord experience!**
+## 💡 Pro Tips
+
+- Use `/queue` to see and page through your music lineup.
+- Tweak thresholds and checks for perfect moderation balance.
+- All moderation and queue actions are **ephemeral** (only you see them), keeping chat clean!

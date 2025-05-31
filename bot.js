@@ -3,7 +3,12 @@ import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import nsfwCheck from './nsfw.js';
-import { playCommand, handleMusicButton, handleMusicMenu, commandsCommand } from './music.js';
+import { playCommand, handleMusicButton, handleMusicMenu, commandsCommand, queueCommand } from './music.js';
+import {
+  moderationCommand,
+  loadModerationSettings,
+  saveModerationSettings,
+} from './moderation.js';
 
 dotenv.config();
 
@@ -77,6 +82,11 @@ const commands = [
       description: 'YouTube link or keywords',
       required: true
     }]
+  },
+  {
+    name: 'queue',
+    description: 'Show the current music queue',
+    options: []
   },
   {
     name: 'setmoderation',
@@ -186,7 +196,7 @@ client.once(Events.ClientReady, async (c) => {
   }
 });
 
-// Handle slash commands and music interaction in one event handler
+// Handle slash commands and music/SE interaction in one event handler
 client.on(Events.InteractionCreate, async interaction => {
   // Music button & menu handlers
   if (interaction.isButton()) {
@@ -217,6 +227,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
   if (interaction.commandName === 'play') {
     await playCommand(client, interaction);
+    return;
+  }
+
+  if (interaction.commandName === 'queue') {
+    await queueCommand(client, interaction);
     return;
   }
 
