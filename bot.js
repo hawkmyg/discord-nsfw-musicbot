@@ -133,6 +133,7 @@ const commands = [
 // Use GUILD_ID from .env for instant command registration
 const GUILD_ID = process.env.GUILD_ID;
 
+// Register slash commands on startup
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -155,8 +156,21 @@ client.once(Events.ClientReady, async (c) => {
   }
 });
 
+// Handle slash commands and music interaction in one event handler
 client.on(Events.InteractionCreate, async interaction => {
+  // Music button & menu handlers
+  if (interaction.isButton()) {
+    await handleMusicButton(interaction);
+    return;
+  }
+  if (interaction.isStringSelectMenu()) {
+    await handleMusicMenu(interaction);
+    return;
+  }
+
+  // Only handle slash commands below
   if (!interaction.isChatInputCommand()) return;
+
   const guildId = interaction.guildId;
   if (!guildId) {
     await interaction.reply({ content: "Commands must be run in a server.", flags: 1 << 6 });
@@ -167,10 +181,12 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.commandName === 'nsfwcheck') {
     const attachment = interaction.options.getAttachment('image');
     await nsfwCheck(interaction, attachment.url);
+    return;
   }
 
   if (interaction.commandName === 'play') {
     await playCommand(client, interaction);
+    return;
   }
 
   if (['setmoderation', 'setthreshold'].includes(interaction.commandName)) {
@@ -217,15 +233,6 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     await interaction.reply(msg);
     return;
-  }
-});
-
-// Music button & menu handlers
-client.on(Events.InteractionCreate, async interaction => {
-  if (interaction.isButton()) {
-    await handleMusicButton(interaction);
-  } else if (interaction.isStringSelectMenu()) {
-    await handleMusicMenu(interaction);
   }
 });
 
