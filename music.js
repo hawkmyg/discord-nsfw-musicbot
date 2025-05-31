@@ -4,15 +4,14 @@ import {
 import play from 'play-dl';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from 'discord.js';
 
-// Set your YouTube cookie here for best compatibility (see play-dl docs)
-play.setToken({
-  youtube: {
-    cookie: 'VISITOR_INFO1_LIVE=srHo6Q9THmc; VISITOR_PRIVACY_METADATA=CgJVUxIEGgAgFw%3D%3D; PREF=tz=America.New_York&f6=40000000&f7=10140&f5=30000; LOGIN_INFO=AFmmF2swRAIgG1nWFnUQ3esGfJe8S0MBa1FnpbzCQh6nbTHPuW4Y_H4CIFXdzm6V8CaGW_pmqZbHcH17ZNJkhjoy1xxSJKAB4BgJ:QUQ3MjNmd0FfX2QtYmI5V1U1dE1NTFp4RWFnQjRMOFVjVjhsbGEwSXRsZkNvdWlVNUhXRUJpZFhFUWp2UUtGTjRPMThYY1FLTEx3dlU2NkdXSlh3QTRUeWQyUFhpT3czTjdLWDVUZkRUZzZPU19LbURBdE5pV2FPZTZPbGo2VWhHcEVoQjFYc3FWSnZhZTdBT0NPUnZ3T0pLcXFmTmFGc2xKTmpUclRfMG92bzVURHhBSTlBNUtkN05mSXZDQ1pPZkRDSEpQODZ2VHFtTk02bm9qaE0xVTM3TERKRlJ1b0ZSZw==; SID=g.a000xgiqVb6bq1-1O5t1kP9ccAhPRBTJTw5KI1MZio0GayoqEC_QVI9DlgmeOB5uybWceFifUQACgYKAZUSARASFQHGX2Mi24yBAo1mtN01AdB_ViGwWhoVAUF8yKoCYpgnOqCODox5lLKKp5NX0076; __Secure-1PSID=g.a000xgiqVb6bq1-1O5t1kP9ccAhPRBTJTw5KI1MZio0GayoqEC_QTvircnfRWDfqGTVm1PHwOgACgYKAVwSARASFQHGX2MiSgpt-getwSB6S2jXVRubLBoVAUF8yKps-Gj_TX8A3WXNvhVm3aCl0076; __Secure-3PSID=g.a000xgiqVb6bq1-1O5t1kP9ccAhPRBTJTw5KI1MZio0GayoqEC_Qj4HDZBo1QTO9yV3pYdgXTAACgYKAe8SARASFQHGX2Mi5GMYBHnGwW07eh-JJmq6zRoVAUF8yKrH5AOXnoHmQvk4vGi55TzV0076; HSID=ALIxi1vId9mzxdk7e; SSID=AQlDVGZ53Dk6F8khd; APISID=mbVtYD-aUEu3joXi/AC9NkK8vX83UQxg5W; SAPISID=39WBDgVaTs6Hdr3Q/Ac-TwQzg5wUzkVLJm; __Secure-1PAPISID=39WBDgVaTs6Hdr3Q/Ac-TwQzg5wUzkVLJm; __Secure-3PAPISID=39WBDgVaTs6Hdr3Q/Ac-TwQzg5wUzkVLJm; YSC=eCiqZow4cKM; __Secure-ROLLOUT_TOKEN=CO6Olr6z-dDQbhCR5MvllbmNAxjqx7_n4cuNAw%3D%3D; wide=1; __Secure-1PSIDTS=sidts-CjIB5H03PyZYtF02PohhekmXAA5nTzpmfL6ThWWJB3WE_xxB6I_7bDJ4uPaRdGuMy3-WahAA; __Secure-3PSIDTS=sidts-CjIB5H03PyZYtF02PohhekmXAA5nTzpmfL6ThWWJB3WE_xxB6I_7bDJ4uPaRdGuMy3-WahAA; SIDCC=AKEyXzXjZc_grk3q75_Ey6n-2dNV_imBBEijdkZj2QuwT-rcWV7osLqVaxcRcQA87JVk5QDDFY0; __Secure-1PSIDCC=AKEyXzW0GPQMDJNGycKFzrvHwnh4qw26lCUSE5lpSw_ffFBO1DWBIvVMXq4gsgqJRQOdxr3cCg; __Secure-3PSIDCC=AKEyXzW8M6L1CP2dI9K6CXcIsb59-4_26YSqtZdDitrlEU3FTc1_T515Sd8aQu-59K6DSFgeGOg'
-  }
-});
+// Optional: Uncomment and set your YouTube cookie if needed for region/age restrictions
+// play.setToken({ youtube: { cookie: 'YOUR_COOKIE_HERE' } });
 
 const queue = new Map(); // guildId -> [ {url, title, requestedBy} ]
 const players = new Map(); // guildId -> audioPlayer
+
+// Regex for strong YouTube URL validation
+const ytRegex = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}/;
 
 export async function playCommand(client, interaction) {
   const query = interaction.options.getString('query');
@@ -37,6 +36,7 @@ export async function playCommand(client, interaction) {
       yt_info = await play.video_basic_info(searchResults[0].url);
     }
     if (!yt_info || !yt_info.video_details || !yt_info.video_details.url) throw new Error('Could not retrieve video details.');
+    if (!ytRegex.test(yt_info.video_details.url)) throw new Error('YouTube URL is invalid.');
   } catch (e) {
     return interaction.editReply('Failed to fetch YouTube info: ' + e.message);
   }
@@ -54,8 +54,9 @@ export async function playCommand(client, interaction) {
     components: [musicButtons(), musicMenu(queue.get(guildId))]
   });
 
-  if (!players.has(guildId)) {
-    playNext(interaction, guildId, voice);
+  // Only start playback if not already playing
+  if (!players.has(guildId) || players.get(guildId)._state.status === AudioPlayerStatus.Idle) {
+    await playNext(interaction, guildId, voice);
   }
 }
 
@@ -98,9 +99,6 @@ export function musicMenu(q) {
   );
 }
 
-// Strong YouTube URL validation regex
-const ytRegex = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}/;
-
 async function playNext(interaction, guildId, voice) {
   const q = queue.get(guildId);
   if (!q || q.length === 0) {
@@ -110,15 +108,10 @@ async function playNext(interaction, guildId, voice) {
   }
 
   const track = q[0];
+  console.log("About to play:", JSON.stringify(track));
 
-  // Debug log
-  console.log("About to play:", track);
-
-  if (
-    !track.url ||
-    typeof track.url !== "string" ||
-    !ytRegex.test(track.url)
-  ) {
+  // Validate the URL before streaming
+  if (!track.url || typeof track.url !== "string" || !ytRegex.test(track.url)) {
     await interaction.followUp({
       content: `Track "${track.title || "Unknown"}" has an invalid or unsupported URL and will be skipped. URL: ${track.url}`,
       flags: 1 << 6
@@ -129,17 +122,18 @@ async function playNext(interaction, guildId, voice) {
 
   let stream;
   try {
-    stream = await play.stream(track.url, { discordPlayerCompatibility: true });
+    stream = await play.stream(track.url, { quality: 2 });
     if (!stream || !stream.stream) {
       throw new Error('play-dl returned empty stream');
     }
+    console.log('stream.type:', stream.type);
   } catch (e) {
-    await interaction.followUp({ content: `Failed to stream **${track.title}**: ${e.message}\nURL: ${track.url}`, flags: 1 << 6 });
+    await interaction.followUp({ content: `Failed to stream: ${e.message}` });
     q.shift();
     return playNext(interaction, guildId, voice);
   }
 
-  const resource = createAudioResource(stream.stream, { inputType: stream.type });
+  const resource = createAudioResource(stream.stream, { inputType: 'opus' });
 
   let connection = getVoiceConnection(guildId);
   if (!connection) {
@@ -148,31 +142,31 @@ async function playNext(interaction, guildId, voice) {
       guildId,
       adapterCreator: voice.guild.voiceAdapterCreator
     });
+    connection.on('stateChange', (oldState, newState) => {
+      console.log(`[VoiceConnection] ${oldState.status} -> ${newState.status}`);
+    });
   }
 
   let player = players.get(guildId);
   if (!player) {
     player = createAudioPlayer();
     players.set(guildId, player);
+    player.on('stateChange', (oldState, newState) => {
+      console.log(`[AudioPlayer] ${oldState.status} -> ${newState.status}`);
+    });
+    player.on('error', error => {
+      console.error('[AudioPlayer Error]:', error);
+      queue.get(guildId)?.shift();
+      playNext(interaction, guildId, voice);
+    });
+    player.on(AudioPlayerStatus.Idle, () => {
+      queue.get(guildId)?.shift();
+      playNext(interaction, guildId, voice);
+    });
   }
 
   connection.subscribe(player);
   player.play(resource);
-
-  player.on('stateChange', (oldState, newState) => {
-    console.log(`[AudioPlayer] ${oldState.status} -> ${newState.status}`);
-  });
-
-  player.once(AudioPlayerStatus.Idle, () => {
-    q.shift();
-    playNext(interaction, guildId, voice);
-  });
-
-  player.on('error', error => {
-    interaction.followUp({ content: `Playback error: ${error.message}`, flags: 1 << 6 }).catch(() => {});
-    q.shift();
-    playNext(interaction, guildId, voice);
-  });
 }
 
 export async function handleMusicButton(interaction) {
