@@ -1,0 +1,15 @@
+{
+  "530460356997414912": {
+    "checks": {
+      "nudity": true,
+      "wad": true,
+      "offensive": true,
+      "drugs": true
+    },
+    "thresholds": {
+      "nudity_raw": 1,
+      "nudity_partial": 0.7,
+      "offensive_prob": 0.7
+    }
+  }
+}
