@@ -41,6 +41,7 @@ git clone https://github.com/your/repo.git
 cd repo
 npm install
 ```
+Will need FFMPEG for music https://github.com/BtbN/FFmpeg-Builds/releases
 
 ### 2. Configure Environment
 
