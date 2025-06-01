@@ -2,7 +2,7 @@
   "530460356997414912": {
     "checks": {
       "nudity_raw": true,
-      "nudity_partial": true,
+      "nudity_partial": false,
       "wad": false,
       "offensive": true
     },
@@ -10,10 +10,6 @@
       "nudity_raw": 0.5,
       "nudity_partial": 0.6,
       "offensive_prob": 0.7
-    },
-    "sightengine_models": [
-      "offensive-2.0",
-      "scam"
-    ]
+    }
   }
 }

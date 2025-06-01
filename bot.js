@@ -1,27 +1,11 @@
 import { Client, GatewayIntentBits, Partials, REST, Routes, Events, PermissionsBitField } from 'discord.js';
-import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import nsfwCheck from './nsfw.js';
 import { playCommand, handleMusicButton, handleMusicMenu, commandsCommand, queueCommand } from './music.js';
-import {
-  moderationCommand,
-  loadModerationSettings,
-  saveModerationSettings,
-} from './moderation.js';
+import { getConfig, reloadConfig } from './reloadable-config.js';
 
-dotenv.config();
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates
-  ],
-  partials: [Partials.Channel, Partials.Message]
-});
-
+// Moderation settings (per guild, saved to disk)
 const SETTINGS_FILE = path.resolve('./moderation_settings.json');
 const DEFAULT_SETTINGS = {
   checks: {
@@ -61,14 +45,14 @@ function getGuildSettings(guildId) {
   return moderationSettings[guildId];
 }
 
-// Register Slash Commands
+// SLASH COMMANDS
 const commands = [
   {
     name: 'nsfwcheck',
     description: 'Check if an image is NSFW',
     options: [{
       name: 'image',
-      type: 11, // Attachment
+      type: 11,
       description: 'Image to check',
       required: true
     }]
@@ -78,7 +62,7 @@ const commands = [
     description: 'Play a YouTube song',
     options: [{
       name: 'query',
-      type: 3, // String
+      type: 3,
       description: 'YouTube link or keywords',
       required: true
     }]
@@ -94,7 +78,7 @@ const commands = [
     options: [
       {
         name: 'category',
-        type: 3, // String
+        type: 3,
         description: 'Check to enable/disable',
         required: true,
         choices: [
@@ -106,7 +90,7 @@ const commands = [
       },
       {
         name: 'enabled',
-        type: 5, // Boolean
+        type: 5,
         description: 'Enable this check? True/False',
         required: true
       }
@@ -118,7 +102,7 @@ const commands = [
     options: [
       {
         name: 'threshold',
-        type: 3, // String
+        type: 3,
         description: 'Which threshold to set',
         required: true,
         choices: [
@@ -129,7 +113,7 @@ const commands = [
       },
       {
         name: 'value',
-        type: 10, // Number
+        type: 10,
         description: 'Threshold value (0-1)',
         required: true
       }
@@ -141,7 +125,7 @@ const commands = [
     options: [
       {
         name: 'check',
-        type: 3, // String
+        type: 3,
         description: 'The check key to enable/disable',
         required: true,
         choices: [
@@ -153,7 +137,7 @@ const commands = [
       },
       {
         name: 'enabled',
-        type: 5, // Boolean
+        type: 5,
         description: 'Enable this check? True/False',
         required: true
       }
@@ -167,23 +151,39 @@ const commands = [
   {
     name: 'commands',
     description: 'List all music bot commands and info'
+  },
+  {
+    name: 'reload',
+    description: 'Reload the bot configuration (admin only)',
+    options: []
   }
 ];
 
-// Use GUILD_ID from .env for instant command registration
-const GUILD_ID = process.env.GUILD_ID;
+const config = getConfig();
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
+  ],
+  partials: [Partials.Channel, Partials.Message]
+});
 
 // Register slash commands on startup
 client.once(Events.ClientReady, async (c) => {
+  await reloadConfig();
+  const config = getConfig();
   console.log(`Logged in as ${c.user.tag}`);
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
   try {
-    if (GUILD_ID) {
+    if (config.GUILD_ID) {
       await rest.put(
-        Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+        Routes.applicationGuildCommands(client.user.id, config.GUILD_ID),
         { body: commands }
       );
-      console.log(`Slash commands registered to guild: ${GUILD_ID}`);
+      console.log(`Slash commands registered to guild: ${config.GUILD_ID}`);
     } else {
       await rest.put(
         Routes.applicationCommands(client.user.id),
@@ -196,132 +196,235 @@ client.once(Events.ClientReady, async (c) => {
   }
 });
 
-// Handle slash commands and music/SE interaction in one event handler
+// Helper to reply and auto-delete after delay
+async function replyAndAutoDelete(interaction, msg, delay = 2000) {
+  await interaction.reply(
+    typeof msg === "string" ? { content: msg } : msg
+  );
+  const sent = await interaction.fetchReply();
+  setTimeout(() => {
+    if (sent && sent.deletable) sent.delete().catch(() => {});
+  }, delay);
+}
+
+// SLASH COMMAND HANDLER with robust interaction error handling
 client.on(Events.InteractionCreate, async interaction => {
-  // Music button & menu handlers
-  if (interaction.isButton()) {
-    await handleMusicButton(interaction);
-    return;
-  }
-  if (interaction.isStringSelectMenu()) {
-    await handleMusicMenu(interaction);
-    return;
-  }
-
-  // Only handle slash commands below
-  if (!interaction.isChatInputCommand()) return;
-
-  const guildId = interaction.guildId;
-  if (!guildId) {
-    await interaction.reply({ content: "Commands must be run in a server.", flags: 1 << 6 });
-    return;
-  }
-  await loadSettings();
-
-  if (interaction.commandName === 'nsfwcheck') {
-    const attachment = interaction.options.getAttachment('image');
-    const settings = getGuildSettings(guildId);
-    await nsfwCheck(interaction, attachment.url, settings);
-    return;
-  }
-
-  if (interaction.commandName === 'play') {
-    await playCommand(client, interaction);
-    return;
-  }
-
-  if (interaction.commandName === 'queue') {
-    await queueCommand(client, interaction);
-    return;
-  }
-
-  if (interaction.commandName === 'commands') {
-    await commandsCommand(client, interaction);
-    return;
-  }
-
-  if (['setmoderation', 'setthreshold', 'setcheck'].includes(interaction.commandName)) {
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      await interaction.reply({ content: "Only admins can change moderation settings.", flags: 1 << 6 });
+  try {
+    if (interaction.isButton()) {
+      try {
+        await handleMusicButton(interaction);
+      } catch (e) {
+        if (e.code !== 10062) console.error('Button interaction error:', e);
+      }
       return;
     }
-  }
-
-  if (interaction.commandName === 'setmoderation') {
-    const category = interaction.options.getString('category');
-    const enabled = interaction.options.getBoolean('enabled');
-    const settings = getGuildSettings(guildId);
-    settings.checks[category] = enabled;
-    await saveSettings();
-    await interaction.reply(`Moderation for **${category}** set to **${enabled}**.`);
-    return;
-  }
-
-  if (interaction.commandName === 'setcheck') {
-    const check = interaction.options.getString('check');
-    const enabled = interaction.options.getBoolean('enabled');
-    const settings = getGuildSettings(guildId);
-    if (settings.checks[check] === undefined) {
-      await interaction.reply({ content: `Check key "${check}" does not exist.`, flags: 1 << 6 });
+    if (interaction.isStringSelectMenu()) {
+      try {
+        await handleMusicMenu(interaction);
+      } catch (e) {
+        if (e.code !== 10062) console.error('Menu interaction error:', e);
+      }
       return;
     }
-    settings.checks[check] = enabled;
-    await saveSettings();
-    await interaction.reply(`Check **${check}** set to **${enabled}**.`);
-    return;
-  }
+    if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === 'setthreshold') {
-    const threshold = interaction.options.getString('threshold');
-    const value = interaction.options.getNumber('value');
-    if (value < 0 || value > 1) {
-      await interaction.reply({ content: "Threshold value must be between 0 and 1.", flags: 1 << 6 });
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      try {
+        await interaction.reply({ content: "Commands must be run in a server.", ephemeral: true });
+      } catch (e) {}
       return;
     }
-    const settings = getGuildSettings(guildId);
-    settings.thresholds[threshold] = value;
-    // If threshold is 0, disable check. If threshold > 0, enable check.
-    if (settings.checks[threshold] !== undefined) {
-      if (value === 0) {
-        settings.checks[threshold] = false;
-      } else {
-        settings.checks[threshold] = true;
+    await loadSettings();
+
+    // --- /reload command ---
+    if (interaction.commandName === 'reload') {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        try {
+          await interaction.reply({ content: "❌ Only admins can reload the configuration.", ephemeral: true });
+        } catch (e) {}
+        return;
+      }
+      try {
+        await reloadConfig();
+        // Use helper for public auto-deleted message
+        await replyAndAutoDelete(interaction, "✅ Configuration reloaded!", 2000);
+      } catch (err) {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: "❌ Error reloading configuration: " + err.message });
+        } else {
+          await interaction.reply({ content: "❌ Error reloading configuration: " + err.message, ephemeral: true });
+        }
+      }
+      return;
+    }
+
+    if (interaction.commandName === 'nsfwcheck') {
+      try {
+        await interaction.deferReply();
+        const attachment = interaction.options.getAttachment('image');
+        const settings = getGuildSettings(guildId);
+        await nsfwCheck(interaction, attachment.url, settings);
+      } catch (e) {
+        try {
+          await interaction.editReply('Something went wrong with nsfwcheck.');
+        } catch (e2) {
+          if (e2.code !== 10062 && interaction.channel) await interaction.channel.send('Something went wrong with nsfwcheck.');
+        }
+      }
+      return;
+    }
+
+    if (interaction.commandName === 'play') {
+      try {
+        await playCommand(client, interaction);
+      } catch (e) {
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply('Something went wrong with /play.');
+          } else {
+            await interaction.reply({ content: "Something went wrong with /play." });
+          }
+        } catch (e2) {
+          if (e2.code !== 10062 && interaction.channel) await interaction.channel.send('Something went wrong with /play.');
+        }
+      }
+      return;
+    }
+
+    if (interaction.commandName === 'queue') {
+      try {
+        await queueCommand(client, interaction);
+      } catch (e) {
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply('Something went wrong with /queue.');
+          } else {
+            await interaction.reply({ content: "Something went wrong with /queue." });
+          }
+        } catch (e2) {
+          if (e2.code !== 10062 && interaction.channel) await interaction.channel.send('Something went wrong with /queue.');
+        }
+      }
+      return;
+    }
+
+    if (interaction.commandName === 'commands') {
+      try {
+        await commandsCommand(client, interaction);
+      } catch (e) {
+        try {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply('Something went wrong with /commands.');
+          } else {
+            await interaction.reply({ content: "Something went wrong with /commands." });
+          }
+        } catch (e2) {
+          if (e2.code !== 10062 && interaction.channel) await interaction.channel.send('Something went wrong with /commands.');
+        }
+      }
+      return;
+    }
+
+    // Moderation admin commands
+    if (['setmoderation', 'setthreshold', 'setcheck'].includes(interaction.commandName)) {
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        try {
+          await interaction.reply({ content: "Only admins can change moderation settings.", ephemeral: true });
+        } catch (e) {}
+        return;
       }
     }
-    await saveSettings();
-    let msg = `Threshold for **${threshold}** set to **${value}**.`;
-    if (value === 0 && settings.checks[threshold] === false) {
-      msg += `\n:information_source: Check **${threshold}** has been disabled because threshold is 0.`;
-    }
-    if (value > 0 && settings.checks[threshold] === true) {
-      msg += `\n:information_source: Check **${threshold}** has been enabled because threshold is above 0.`;
-    }
-    await interaction.reply(msg);
-    return;
-  }
 
-  if (interaction.commandName === 'showmoderation') {
-    const settings = getGuildSettings(guildId);
-    let msg = '**Current moderation settings:**\n';
-    for (const cat in settings.checks) {
-      msg += `- ${cat}: ${settings.checks[cat]}\n`;
+    if (interaction.commandName === 'setmoderation') {
+      const category = interaction.options.getString('category');
+      const enabled = interaction.options.getBoolean('enabled');
+      const settings = getGuildSettings(guildId);
+      settings.checks[category] = enabled;
+      await saveSettings();
+      try {
+        await interaction.reply(`Moderation for **${category}** set to **${enabled}**.`);
+      } catch (e) {}
+      return;
     }
-    msg += '\n**Thresholds:**\n';
-    for (const th in settings.thresholds) {
-      msg += `- ${th}: ${settings.thresholds[th]}\n`;
+
+    if (interaction.commandName === 'setcheck') {
+      const check = interaction.options.getString('check');
+      const enabled = interaction.options.getBoolean('enabled');
+      const settings = getGuildSettings(guildId);
+      if (settings.checks[check] === undefined) {
+        try {
+          await interaction.reply({ content: `Check key "${check}" does not exist.`, ephemeral: true });
+        } catch (e) {}
+        return;
+      }
+      settings.checks[check] = enabled;
+      await saveSettings();
+      try {
+        await interaction.reply(`Check **${check}** set to **${enabled}**.`);
+      } catch (e) {}
+      return;
     }
-    await interaction.reply(msg);
-    return;
+
+    if (interaction.commandName === 'setthreshold') {
+      const threshold = interaction.options.getString('threshold');
+      const value = interaction.options.getNumber('value');
+      if (value < 0 || value > 1) {
+        try {
+          await interaction.reply({ content: "Threshold value must be between 0 and 1.", ephemeral: true });
+        } catch (e) {}
+        return;
+      }
+      const settings = getGuildSettings(guildId);
+      settings.thresholds[threshold] = value;
+      if (settings.checks[threshold] !== undefined) {
+        settings.checks[threshold] = value > 0;
+      }
+      await saveSettings();
+      let msg = `Threshold for **${threshold}** set to **${value}**.`;
+      if (value === 0 && settings.checks[threshold] === false) {
+        msg += `\n:information_source: Check **${threshold}** has been disabled because threshold is 0.`;
+      }
+      if (value > 0 && settings.checks[threshold] === true) {
+        msg += `\n:information_source: Check **${threshold}** has been enabled because threshold is above 0.`;
+      }
+      try {
+        await interaction.reply(msg);
+      } catch (e) {}
+      return;
+    }
+
+    if (interaction.commandName === 'showmoderation') {
+      const settings = getGuildSettings(guildId);
+      let msg = '**Current moderation settings:**\n';
+      for (const cat in settings.checks) {
+        msg += `- ${cat}: ${settings.checks[cat]}\n`;
+      }
+      msg += '\n**Thresholds:**\n';
+      for (const th in settings.thresholds) {
+        msg += `- ${th}: ${settings.thresholds[th]}\n`;
+      }
+      try {
+        await interaction.reply(msg);
+      } catch (e) {}
+      return;
+    }
+  } catch (err) {
+    console.error('Unhandled interaction error:', err);
+    if (interaction && interaction.channel) {
+      try {
+        await interaction.channel.send("An unknown error occurred while processing your command.");
+      } catch (e2) {}
+    }
   }
 });
 
-// !commands message listener for prefix help + auto NSFW scan for images
+// PREFIX MESSAGE HANDLER FOR !commands and NSFW auto check
 client.on('messageCreate', async message => {
-  // Ignore messages from bots
   if (message.author.bot) return;
 
-  // !commands text help
   if (message.content.trim().toLowerCase() === '!commands') {
     message.channel.send(
       "**Available Music Bot Commands:**\n" +
@@ -335,13 +438,12 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // ------------ AUTO NSFW SCAN FOR IMAGES -------------
   if (message.attachments.size > 0) {
     const imageAttachments = message.attachments.filter(att => att.contentType && att.contentType.startsWith('image/'));
     if (imageAttachments.size === 0) return;
 
     const guildId = message.guildId;
-    if (!guildId) return; // If DM, skip
+    if (!guildId) return;
 
     await loadSettings();
     const settings = getGuildSettings(guildId);
@@ -349,7 +451,7 @@ client.on('messageCreate', async message => {
     for (const [, attachment] of imageAttachments) {
       try {
         await nsfwCheck(
-          { 
+          {
             deferReply: async () => {},
             editReply: async () => {},
             channel: message.channel
@@ -365,4 +467,5 @@ client.on('messageCreate', async message => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// Always use getConfig() for the latest settings!
+client.login(getConfig().DISCORD_TOKEN);

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Discord Music & Moderation Bot</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2em; max-width: 800px; }
+    code, pre { background: #f4f4f4; border-radius: 3px; padding: 0.2em 0.4em; }
+    h1, h2, h3 { color: #2d3a4a; }
+    .section { margin-bottom: 2em; }
+    ul { margin-left: 2em; }
+  </style>
+</head>
+<body>
+  <h1>Discord Music &amp; Moderation Bot</h1>
+  <p>
+    A modern Discord bot for music playback and powerful server moderation, featuring per-guild NSFW detection, robust slash commands, dynamic settings, and auto-deleting admin actions.
+  </p>
+
+  <div class="section">
+    <h2>✨ Features</h2>
+    <ul>
+      <li><b>Music Player</b>
+        <ul>
+          <li><code>/play &lt;url or keywords&gt;</code>: Play or queue YouTube songs/playlists</li>
+          <li><code>/queue</code>: View, page, and manage the music queue</li>
+          <li>Song selection menus and intuitive control buttons (pause/resume/skip/stop/volume)</li>
+          <li>Modern Discord.js v14+ codebase</li>
+        </ul>
+      </li>
+      <li><b>NSFW Moderation</b>
+        <ul>
+          <li>Automatic NSFW image detection on uploads (per-guild)</li>
+          <li><code>/nsfwcheck</code>: Manual image scan</li>
+          <li>Per-guild settings and thresholds for nudity, offensive, and WAD (Weapons/Ammo/Drugs)</li>
+          <li>Admin-only moderation commands for configuration</li>
+        </ul>
+      </li>
+      <li><b>Admin &amp; Utility</b>
+        <ul>
+          <li><code>/reload</code>: Reload configuration at runtime (admin only, auto-deletes confirmation)</li>
+          <li>Robust error handling for all commands</li>
+          <li>Slash command registration with up-to-date Discord.js conventions</li>
+        </ul>
+      </li>
+      <li><b>Settings &amp; Persistence</b>
+        <ul>
+          <li>All moderation and threshold settings are saved per guild in <code>moderation_settings.json</code></li>
+          <li>Live configuration reload with <code>/reload</code></li>
+        </ul>
+      </li>
+      <li><b>Example and Environment</b>
+        <ul>
+          <li>Example <code>.env</code> file and configuration guidance included</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>🚀 Getting Started</h2>
+    <ol>
+      <li>
+        <b>Clone &amp; Install</b>
+        <pre><code>git clone https://github.com/your/repo.git
+cd repo
+npm install
+</code></pre>
+      </li>
+      <li>
+        <b>Configure Environment</b>
+        <pre><code>cp example.env .env</code></pre>
+        <p>Edit <code>.env</code> to include:</p>
+        <pre><code>DISCORD_TOKEN=your_discord_token_here
+GUILD_ID=your_guild_id_here # (optional, for guild-specific command registration)
+MUSIC_ROOM_VOICE_ID=voice_channel_id # (optional, restricts music commands)
+REQUEST_TEXT_CHANNEL_ID=text_channel_id # (optional, restricts music commands)
+</code></pre>
+      </li>
+      <li>
+        <b>Run the Bot</b>
+        <pre><code>node bot.js</code></pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>💡 Commands</h2>
+    <h3>Music</h3>
+    <ul>
+      <li><code>/play &lt;YouTube link or keywords&gt;</code> – Queue a song or playlist</li>
+      <li><code>/queue</code> – Show the current music queue (with pagination)</li>
+      <li><code>/commands</code> – List all music commands</li>
+    </ul>
+    <b>Controls</b>
+    <ul>
+      <li>Pause, resume, skip, stop, and volume via interactive buttons under the music message</li>
+      <li>Song selection menu for quick jumps in the queue</li>
+    </ul>
+    <h3>NSFW Moderation</h3>
+    <ul>
+      <li><code>/nsfwcheck &lt;image&gt;</code> – Manually check an image for NSFW content</li>
+      <li>Automatic NSFW checks on all uploaded images</li>
+    </ul>
+    <b>Moderation Settings (Admin only)</b>
+    <ul>
+      <li><code>/setmoderation &lt;category&gt; &lt;enabled&gt;</code> – Enable/disable categories (nudity, offensive, etc)</li>
+      <li><code>/setthreshold &lt;category&gt; &lt;value&gt;</code> – Set detection threshold (0-1)</li>
+      <li><code>/setcheck &lt;check&gt; &lt;enabled&gt;</code> – Manually toggle any moderation check</li>
+      <li><code>/showmoderation</code> – Show current moderation settings</li>
+    </ul>
+    <h3>Utility</h3>
+    <ul>
+      <li><code>/reload</code> – Reload configuration (confirmation auto-deletes, admin only)</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>🛡️ Permissions</h2>
+    <ul>
+      <li>Send Messages, Manage Messages (for auto-deletion)</li>
+      <li>Embed Links, Attach Files, Read Message History</li>
+      <li>Connect/Speak (for music)</li>
+      <li>Use Slash Commands</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>🔧 Settings</h2>
+    <p>All moderation settings are stored in <code>moderation_settings.json</code> — do <b>not</b> edit it by hand unless you know what you're doing. Use the slash commands to configure.</p>
+  </div>
+
+  <div class="section">
+    <h2>🧪 Example <code>.env</code></h2>
+    <pre><code>DISCORD_TOKEN=your_bot_token_here
+GUILD_ID=123456789012345678
+MUSIC_ROOM_VOICE_ID=123456789012345678
+REQUEST_TEXT_CHANNEL_ID=123456789012345678
+</code></pre>
+  </div>
+
+  <div class="section">
+    <h2>📂 Example Settings (<code>moderation_settings.json</code>)</h2>
+    <pre><code>{
+  "123456789012345678": {
+    "checks": {
+      "nudity_raw": true,
+      "nudity_partial": true,
+      "wad": true,
+      "offensive": true
+    },
+    "thresholds": {
+      "nudity_raw": 0.7,
+      "nudity_partial": 0.7,
+      "offensive_prob": 0.7
+    }
+  }
+}
+</code></pre>
+  </div>
+
+  <div class="section">
+    <h2>📝 License</h2>
+    <p>MIT</p>
+  </div>
+</body>
+</html>

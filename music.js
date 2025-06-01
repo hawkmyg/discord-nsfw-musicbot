@@ -14,116 +14,184 @@ import {
   StringSelectMenuBuilder,
   EmbedBuilder,
 } from "discord.js";
+import { getConfig, reloadConfig } from "./reloadable-config.js";
 
-// Strong YouTube URL validation regex (video or playlist)
+// Regex for YouTube video and playlist URLs
 const ytVideoRegex = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}/;
 const ytPlaylistRegex = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\/.*(list=)([\w-]+)/;
 
-const queue = new Map(); // guildId -> [ {url, title, requestedBy} ]
-const players = new Map(); // guildId -> audioPlayer
-const nowPlayingMsg = new Map(); // guildId -> { message, channelId }
-const volumes = new Map(); // guildId -> currentVolume (0.0 - 2.0), default 1.0
-const pausedStates = new Map(); // guildId -> boolean
+// Guild-specific maps for queues, players, volumes, etc.
+const queue = new Map();
+const players = new Map();
+const nowPlayingMsg = new Map();
+const volumes = new Map();
+const pausedStates = new Map();
 
-// Helper for auto-deleting public status messages (volume, queued, skipped, stopped)
+/**
+ * Utility: Send a message and auto-delete it after a delay.
+ */
 async function sendAndAutoDelete(interaction, msg, delay = 2000) {
   const sent = await interaction.channel.send(msg);
   setTimeout(() => sent.delete().catch(() => {}), delay);
 }
 
+/**
+ * Main /play command handler.
+ * Enforces text and voice channel restrictions according to config.
+ */
 export async function playCommand(client, interaction) {
-  const query = interaction.options.getString("query");
-  const voice = interaction.member.voice.channel;
-  if (!voice)
-    return interaction.reply({
-      content: "Join a voice channel first!",
-      flags: 1 << 6 });
-
-  if (!query || typeof query !== "string" || !query.trim()) {
-    return interaction.reply({
-      content: "You must provide a valid YouTube link or search keywords.",
-      flags: 1 << 6 });
-  }
-
-  await interaction.deferReply();
-
-  let songs = [];
-
   try {
-    // If playlist URL, handle playlist
-    if (ytPlaylistRegex.test(query) || play.yt_validate(query) === "playlist") {
-      const playlist = await play.playlist_info(query, { incomplete: true });
-      const videos = await playlist.all_videos();
-      // Optionally limit number of songs to 50 for sanity
-      const videoList = videos.slice(0, 50);
-      songs = videoList.map((video) => ({
-        url: video.url,
-        title: video.title,
-        requestedBy: interaction.user.username,
-      }));
-      await sendAndAutoDelete(interaction, {
-        content: `Queued playlist: **${playlist.title}** with ${songs.length} songs. (Requested by: **${interaction.user.username}**)`,
-      });
-    } else {
-      // Not a playlist: treat as single video or search
-      let yt_url = query;
-      let yt_title = null;
-      if (!ytVideoRegex.test(query)) {
-        // Use play-dl to search by keywords
-        const searchResults = await play.search(query, { limit: 1 });
-        if (!searchResults || !searchResults[0] || !searchResults[0].url) {
-          throw new Error("No results found for your query.");
-        }
-        yt_url = searchResults[0].url;
-      }
-      // Validate with ytdl-core or fallback to play-dl
-      try {
-        const info = await ytdl.getBasicInfo(yt_url);
-        yt_title = info.videoDetails.title;
-        yt_url = info.videoDetails.video_url;
-      } catch (e) {
-        // Fallback: Use play-dl to fetch the title if ytdl-core fails
-        const info = await play.video_basic_info(yt_url);
-        yt_title = info.video_details.title;
-        yt_url = info.video_details.url;
-      }
-      songs = [
-        {
-          url: yt_url,
-          title: yt_title,
-          requestedBy: interaction.user.username,
-        },
-      ];
-      await sendAndAutoDelete(interaction, {
-        content: `Queued: **${yt_title}** (Requested by: **${interaction.user.username}**)`,
-        components: [musicButtons(volumes.get(interaction.guildId) ?? 1.0, false), musicMenu(songs)],
+    const config = getConfig();
+    const MUSIC_ROOM_VOICE_ID = config.MUSIC_ROOM_VOICE_ID || "";
+    const REQUEST_TEXT_CHANNEL_ID = config.REQUEST_TEXT_CHANNEL_ID || "";
+
+    // --- TEXT CHANNEL ENFORCEMENT ---
+    if (
+      REQUEST_TEXT_CHANNEL_ID &&
+      interaction.channelId !== REQUEST_TEXT_CHANNEL_ID
+    ) {
+      return interaction.reply({
+        content: `❌ Use this command in <#${REQUEST_TEXT_CHANNEL_ID}> only.`,
+        flags: 1 << 6,
       });
     }
+
+    // --- VOICE CHANNEL ENFORCEMENT ---
+    let voiceChannel;
+    if (MUSIC_ROOM_VOICE_ID) {
+      voiceChannel = interaction.guild.channels.cache.get(MUSIC_ROOM_VOICE_ID);
+      if (!voiceChannel)
+        return interaction.reply({
+          content: `❌ Music room not found!`,
+          flags: 1 << 6,
+        });
+
+      if (
+        !interaction.member.voice.channel ||
+        interaction.member.voice.channel.id !== MUSIC_ROOM_VOICE_ID
+      ) {
+        return interaction.reply({
+          content: `❌ Join the music room <#${MUSIC_ROOM_VOICE_ID}> to request songs.`,
+          flags: 1 << 6,
+        });
+      }
+    } else {
+      voiceChannel = interaction.member.voice.channel;
+      if (!voiceChannel)
+        return interaction.reply({
+          content: "Join a voice channel first!",
+          flags: 1 << 6,
+        });
+    }
+
+    // --- QUERY VALIDATION ---
+    const query = interaction.options.getString("query");
+    if (!query || typeof query !== "string" || !query.trim()) {
+      return interaction.reply({
+        content: "You must provide a valid YouTube link or search keywords.",
+        flags: 1 << 6,
+      });
+    }
+
+    await interaction.deferReply();
+
+    // --- SONG SEARCH/QUEUE ---
+    let songs = [];
+
+    try {
+      // Playlist: add up to 50 tracks
+      if (
+        ytPlaylistRegex.test(query) ||
+        (await play.yt_validate(query)) === "playlist"
+      ) {
+        const playlist = await play.playlist_info(query, { incomplete: true });
+        const videos = await playlist.all_videos();
+        const videoList = videos.slice(0, 50);
+        songs = videoList.map((video) => ({
+          url: video.url,
+          title: video.title,
+          requestedBy: interaction.user.username,
+        }));
+        await sendAndAutoDelete(interaction, {
+          content: `Queued playlist: **${playlist.title}** with ${songs.length} songs. (Requested by: **${interaction.user.username}**)`,
+        });
+      } else {
+        // Single video or search
+        let yt_url = query;
+        let yt_title = null;
+        if (!ytVideoRegex.test(query)) {
+          const searchResults = await play.search(query, { limit: 1 });
+          if (
+            !searchResults ||
+            !searchResults[0] ||
+            !searchResults[0].url
+          ) {
+            throw new Error("No results found for your query.");
+          }
+          yt_url = searchResults[0].url;
+        }
+        try {
+          const info = await ytdl.getBasicInfo(yt_url);
+          yt_title = info.videoDetails.title;
+          yt_url = info.videoDetails.video_url;
+        } catch (e) {
+          const info = await play.video_basic_info(yt_url);
+          yt_title = info.video_details.title;
+          yt_url = info.video_details.url;
+        }
+        songs = [
+          {
+            url: yt_url,
+            title: yt_title,
+            requestedBy: interaction.user.username,
+          },
+        ];
+        await sendAndAutoDelete(interaction, {
+          content: `Queued: **${yt_title}** (Requested by: **${interaction.user.username}**)`,
+          components: [
+            musicButtons(volumes.get(interaction.guildId) ?? 1.0, false),
+            musicMenu(songs),
+          ],
+        });
+      }
+    } catch (e) {
+      await interaction.editReply("Failed to fetch YouTube info: " + e.message);
+      return;
+    }
+
+    // --- QUEUE MANAGEMENT ---
+    const guildId = interaction.guildId;
+    if (!queue.has(guildId)) queue.set(guildId, []);
+    queue.get(guildId).push(...songs);
+
+    // --- START PLAYBACK IF NOT ALREADY ACTIVE ---
+    if (
+      !players.has(guildId) ||
+      players.get(guildId)._state.status === AudioPlayerStatus.Idle
+    ) {
+      pausedStates.set(guildId, false);
+      await playNext(interaction, guildId, voiceChannel);
+    }
+
+    setTimeout(() => {
+      interaction.deleteReply().catch(() => {});
+    }, 2200);
   } catch (e) {
-    await interaction.editReply("Failed to fetch YouTube info: " + e.message);
-    return;
+    console.error("playCommand error:", e);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply("Fatal error in /play: " + e.message);
+    } else {
+      await interaction.reply({
+        content: "Fatal error in /play: " + e.message,
+        ephemeral: true,
+      });
+    }
   }
-
-  const guildId = interaction.guildId;
-  if (!queue.has(guildId)) queue.set(guildId, []);
-  queue.get(guildId).push(...songs);
-
-  // Only start playback if not already playing
-  if (
-    !players.has(guildId) ||
-    players.get(guildId)._state.status === AudioPlayerStatus.Idle
-  ) {
-    pausedStates.set(guildId, false);
-    await playNext(interaction, guildId, voice);
-  }
-
-  // Remove the "RAGE-NSFW is thinking..." deferred reply after queue/now-playing messages are sent
-  setTimeout(() => {
-    interaction.deleteReply().catch(() => {});
-  }, 2200);
 }
 
-// PAGINATED QUEUE WITH BUTTONS
+/**
+ * Pagination row for the queue display.
+ */
 function queuePaginationRow(page, totalPages) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -139,8 +207,11 @@ function queuePaginationRow(page, totalPages) {
   );
 }
 
+/**
+ * Builds a paginated queue message.
+ */
 function buildQueueMessage(q, page, itemsPerPage) {
-  const totalPages = Math.ceil(q.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(q.length / itemsPerPage));
   const start = page * itemsPerPage;
   const end = Math.min(start + itemsPerPage, q.length);
   let msg = `🎶 **Music Queue (Page ${page + 1}/${totalPages}):**\n`;
@@ -150,11 +221,17 @@ function buildQueueMessage(q, page, itemsPerPage) {
   return msg;
 }
 
+/**
+ * /queue command handler. Shows a paginated queue.
+ */
 export async function queueCommand(client, interaction) {
   const guildId = interaction.guildId;
   const q = queue.get(guildId) || [];
   if (q.length === 0)
-    return interaction.reply({ content: "The queue is empty.", flags: 1 << 6 });
+    return interaction.reply({
+      content: "The queue is empty.",
+      flags: 1 << 6,
+    });
 
   const itemsPerPage = 10;
   let page = 0;
@@ -176,7 +253,6 @@ export async function queueCommand(client, interaction) {
   });
 
   collector.on("collect", async (btn) => {
-    // Always defer the update to prevent multiple acknowledgments error
     await btn.deferUpdate().catch(() => {});
     if (btn.customId === "queue_prev" && page > 0) page--;
     if (btn.customId === "queue_next" && page < totalPages - 1) page++;
@@ -186,14 +262,14 @@ export async function queueCommand(client, interaction) {
         components: [queuePaginationRow(page, totalPages)],
         flags: 1 << 6,
       });
-    } catch (err) {
-      // Ignore errors from expired interactions
-    }
+    } catch (err) {}
   });
 }
 
+/**
+ * /commands command handler. Lists available commands.
+ */
 export async function commandsCommand(client, interaction) {
-  // List the available bot commands
   const commandsList = [
     {
       name: "/play <YouTube link or keywords>",
@@ -227,10 +303,13 @@ export async function commandsCommand(client, interaction) {
       commandsList
         .map((cmd) => `• **${cmd.name}**\n  ${cmd.desc}`)
         .join("\n\n"),
-    flags: 1 << 6 });
+    flags: 1 << 6,
+  });
 }
 
-// Fancier Music Control Buttons with emoji and color
+/**
+ * Returns music control buttons row.
+ */
 export function musicButtons(volume = 1.0, paused = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -261,6 +340,9 @@ export function musicButtons(volume = 1.0, paused = false) {
   );
 }
 
+/**
+ * Returns a select menu for the current queue.
+ */
 export function musicMenu(q) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
@@ -275,10 +357,13 @@ export function musicMenu(q) {
   );
 }
 
+/**
+ * Plays the next song in the queue.
+ */
 async function playNext(interaction, guildId, voice) {
   const q = queue.get(guildId);
   if (!q || q.length === 0) {
-    // Remove now playing message if there is one
+    // Cleanup when queue is empty
     if (nowPlayingMsg.has(guildId)) {
       const { message } = nowPlayingMsg.get(guildId);
       if (message && message.deletable) await message.delete().catch(() => {});
@@ -292,6 +377,7 @@ async function playNext(interaction, guildId, voice) {
 
   const track = q[0];
 
+  // Validate track URL
   if (
     !track.url ||
     typeof track.url !== "string" ||
@@ -299,15 +385,15 @@ async function playNext(interaction, guildId, voice) {
   ) {
     await interaction.followUp({
       content: `Track "${track.title || "Unknown"}" has an invalid or unsupported URL and will be skipped. URL: ${track.url}`,
-      flags: 1 << 6 });
+      flags: 1 << 6,
+    });
     q.shift();
     return playNext(interaction, guildId, voice);
   }
 
   let resource;
-  let used = "ytdl-core";
   try {
-    // Try ytdl-core first
+    // Try ytdl-core for audio only
     let ytStream = ytdl(track.url, {
       filter: "audioonly",
       quality: "highestaudio",
@@ -318,9 +404,8 @@ async function playNext(interaction, guildId, voice) {
       inlineVolume: true,
     });
   } catch (e1) {
-    used = "play-dl";
+    // Fallback to play-dl
     try {
-      // If ytdl fails, fallback to play-dl
       const { stream } = await play.video_stream(track.url);
       resource = createAudioResource(stream, {
         inputType: "arbitrary",
@@ -329,16 +414,18 @@ async function playNext(interaction, guildId, voice) {
     } catch (e2) {
       await interaction.followUp({
         content: `Failed to stream "${track.title}":\n- ytdl-core error: ${e1.message}\n- play-dl error: ${e2.message}`,
-        flags: 1 << 6 });
+        flags: 1 << 6,
+      });
       q.shift();
       return playNext(interaction, guildId, voice);
     }
   }
 
-  // Set initial or current volume
+  // Set volume if possible
   const currentVolume = volumes.get(guildId) ?? 1.0;
   if (resource.volume) resource.volume.setVolume(currentVolume);
 
+  // Join voice channel if not already
   let connection = getVoiceConnection(guildId);
   if (!connection) {
     connection = joinVoiceChannel({
@@ -353,13 +440,12 @@ async function playNext(interaction, guildId, voice) {
     });
   }
 
+  // Create audio player if not already
   let player = players.get(guildId);
   if (!player) {
     player = createAudioPlayer();
     players.set(guildId, player);
-    player.on("stateChange", (oldState, newState) => {
-      //console.log(`[AudioPlayer] ${oldState.status} -> ${newState.status}`);
-    });
+    player.on("stateChange", (oldState, newState) => {});
     player.on("error", (error) => {
       console.error("[AudioPlayer Error]:", error);
       queue.get(guildId)?.shift();
@@ -371,22 +457,27 @@ async function playNext(interaction, guildId, voice) {
     });
   }
 
+  // Start playback
   connection.subscribe(player);
   player.play(resource);
-
   pausedStates.set(guildId, false);
 
-  // --- FANCY NOW PLAYING MESSAGE (Title & Requester, no thumbnail) ---
+  // Remove previous now playing message, if any
   if (nowPlayingMsg.has(guildId)) {
     const { message } = nowPlayingMsg.get(guildId);
     if (message && message.deletable) await message.delete().catch(() => {});
     nowPlayingMsg.delete(guildId);
   }
 
+  // Send new now playing embed
   const embed = new EmbedBuilder()
     .setColor(0xff5555)
     .setTitle("🎶 Now Playing")
-    .setDescription(`**${track.title}**\nRequested by: **${track.requestedBy}**\n\n**Volume:** ${Math.round(currentVolume * 100)}%`)
+    .setDescription(
+      `**${track.title}**\nRequested by: **${track.requestedBy}**\n\n**Volume:** ${Math.round(
+        currentVolume * 100
+      )}%`
+    )
     .setURL(track.url)
     .setTimestamp(new Date());
 
@@ -394,9 +485,15 @@ async function playNext(interaction, guildId, voice) {
     embeds: [embed],
     components: [musicButtons(currentVolume, false)],
   });
-  nowPlayingMsg.set(guildId, { message: sentMsg, channelId: interaction.channel.id });
+  nowPlayingMsg.set(guildId, {
+    message: sentMsg,
+    channelId: interaction.channel.id,
+  });
 }
 
+/**
+ * Handles music control button interactions.
+ */
 export async function handleMusicButton(interaction) {
   const guildId = interaction.guildId;
   const player = players.get(guildId);
@@ -407,13 +504,12 @@ export async function handleMusicButton(interaction) {
   if (!player)
     return interaction.reply({
       content: "Nothing is playing.",
-      flags: 1 << 6 });
+      flags: 1 << 6,
+    });
 
-  // Always acknowledge the interaction to avoid "This interaction failed"
   try {
     await interaction.deferUpdate();
   } catch (e) {
-    // Ignore "Unknown interaction" errors caused by rapid/spam clicks
     if (e.code === 10062) return;
     throw e;
   }
@@ -422,17 +518,17 @@ export async function handleMusicButton(interaction) {
     if (!wasPaused) {
       player.pause();
       pausedStates.set(guildId, true);
-      await sendAndAutoDelete(interaction, { content: "RAGE-NSFW: Paused." });
+      await sendAndAutoDelete(interaction, { content: "Paused." });
     } else {
       player.unpause();
       pausedStates.set(guildId, false);
-      await sendAndAutoDelete(interaction, { content: "RAGE-NSFW: Resumed." });
+      await sendAndAutoDelete(interaction, { content: "Resumed." });
     }
   }
   if (interaction.customId === "skip") {
     queue.get(guildId)?.shift();
     player.stop();
-    await sendAndAutoDelete(interaction, { content: "RAGE-NSFW: Skipped." });
+    await sendAndAutoDelete(interaction, { content: "Skipped." });
   }
   if (interaction.customId === "stop") {
     queue.set(guildId, []);
@@ -440,62 +536,71 @@ export async function handleMusicButton(interaction) {
     getVoiceConnection(guildId)?.destroy();
     players.delete(guildId);
     pausedStates.set(guildId, false);
-    // Remove now playing message if there is one
     if (nowPlayingMsg.has(guildId)) {
       const { message } = nowPlayingMsg.get(guildId);
       if (message && message.deletable) await message.delete().catch(() => {});
       nowPlayingMsg.delete(guildId);
     }
-    await sendAndAutoDelete(interaction, { content: "RAGE-NSFW: Stopped and disconnected." });
+    await sendAndAutoDelete(interaction, { content: "Stopped and disconnected." });
   }
   if (interaction.customId === "volume_down") {
-    // Lower volume by 10%, min 5%
     currentVol = Math.max(0.05, currentVol - 0.1);
     volumes.set(guildId, currentVol);
-    // Set volume on currently playing resource
     const resource = player.state.resource;
     if (resource && resource.volume) {
       resource.volume.setVolume(currentVol);
       didChangeVol = true;
     }
     await sendAndAutoDelete(interaction, {
-      content: `RAGE-NSFW: Volume: ${Math.round(currentVol * 100)}%`,
+      content: `Volume: ${Math.round(currentVol * 100)}%`,
     });
   }
   if (interaction.customId === "volume_up") {
-    // Raise volume by 10%, max 200%
     currentVol = Math.min(2.0, currentVol + 0.1);
     volumes.set(guildId, currentVol);
-    // Set volume on currently playing resource
     const resource = player.state.resource;
     if (resource && resource.volume) {
       resource.volume.setVolume(currentVol);
       didChangeVol = true;
     }
     await sendAndAutoDelete(interaction, {
-      content: `RAGE-NSFW: Volume: ${Math.round(currentVol * 100)}%`,
+      content: `Volume: ${Math.round(currentVol * 100)}%`,
     });
   }
 
-  // Update Now Playing message's buttons to reflect new volume or pause state
-  if ((didChangeVol || interaction.customId === "pause_resume") && nowPlayingMsg.has(guildId)) {
+  // Update volume and button UI if changed
+  if (
+    (didChangeVol || interaction.customId === "pause_resume") &&
+    nowPlayingMsg.has(guildId)
+  ) {
     const { message } = nowPlayingMsg.get(guildId);
     try {
-      await message.edit({ components: [musicButtons(currentVol, pausedStates.get(guildId) ?? false)] });
-      // Also update embed with new volume if volume changed
+      await message.edit({
+        components: [
+          musicButtons(currentVol, pausedStates.get(guildId) ?? false),
+        ],
+      });
       if (didChangeVol) {
         const embed = message.embeds[0]
           ? EmbedBuilder.from(message.embeds[0])
           : new EmbedBuilder().setTitle("🎶 Now Playing");
-        embed.setDescription(embed.data.description.replace(/(\*\*Volume:\*\* )(\d+)%/, `**Volume:** ${Math.round(currentVol * 100)}%`));
-        await message.edit({ embeds: [embed] });
+        if (embed.data && embed.data.description) {
+          embed.setDescription(
+            embed.data.description.replace(
+              /(\*\*Volume:\*\* )(\d+)%/,
+              `**Volume:** ${Math.round(currentVol * 100)}%`
+            )
+          );
+          await message.edit({ embeds: [embed] });
+        }
       }
-    } catch (e) {
-      // Ignore edit errors
-    }
+    } catch (e) {}
   }
 }
 
+/**
+ * Handles song selection menu interaction.
+ */
 export async function handleMusicMenu(interaction) {
   const guildId = interaction.guildId;
   const selected = interaction.values[0];
@@ -518,4 +623,40 @@ export async function handleMusicMenu(interaction) {
   await interaction.reply({
     content: `Selected: **${track.title}** (requested by ${track.requestedBy})`,
   });
+}
+
+/**
+ * Handler for the /reload command.
+ * Only allows administrators to reload the config.
+ * Auto-deletes the success message after 2 seconds.
+ */
+export async function handleReloadCommand(client, interaction) {
+  // Only allow admins:
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  if (!member.permissions.has("Administrator")) {
+    await interaction.reply({
+      content: "❌ Only admins can reload the configuration.",
+      ephemeral: true
+    });
+    return;
+  }
+  try {
+    await reloadConfig();
+    // Send a PUBLIC message
+    const confirmation = await interaction.reply({
+      content: "✅ Configuration reloaded!",
+      fetchReply: true
+    });
+    // Delete after 2 seconds
+    setTimeout(() => {
+      if (confirmation && confirmation.deletable) {
+        confirmation.delete().catch((e) => console.error("Delete error:", e));
+      }
+    }, 2000);
+  } catch (err) {
+    await interaction.reply({
+      content: "❌ Error reloading configuration: " + err.message,
+      ephemeral: true
+    });
+  }
 }
