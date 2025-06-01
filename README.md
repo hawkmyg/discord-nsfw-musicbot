@@ -34,14 +34,30 @@ A modern Discord bot for music playback and powerful server moderation, featurin
 
 ## 🚀 Getting Started
 
-### 1. Clone & Install
+### 1. Install [FFMPEG](https://ffmpeg.org/) (Required for Music Playback)
+
+**FFMPEG is required for audio streaming.  
+You must install it and ensure it's available in your system PATH.**
+
+#### Windows
+
+- Download from [ffmpeg.org/download.html](https://ffmpeg.org/download.html)
+- Unzip the folder (e.g., `ffmpeg-*-win64-static.zip`)
+- Copy the `bin` folder path (contains `ffmpeg.exe`)
+- Add it to your system `PATH`:
+  - Search "Edit the system environment variables" → Environment Variables → Under "System variables" find and edit `Path` → Add the full path to the `bin` folder.
+
+#### Verify Installation
+
+After install, run:
 
 ```bash
-git clone https://github.com/your/repo.git
-cd repo
-npm install
+ffmpeg -version
 ```
-Will need FFMPEG for music https://github.com/BtbN/FFmpeg-Builds/releases
+
+You should see FFMPEG version info.
+
+---
 
 ### 2. Configure Environment
 
@@ -59,6 +75,8 @@ GUILD_ID=your_guild_id_here # (optional, for guild-specific command registration
 MUSIC_ROOM_VOICE_ID=voice_channel_id # (optional, restricts music commands)
 REQUEST_TEXT_CHANNEL_ID=text_channel_id # (optional, restricts music commands)
 ```
+
+---
 
 ### 3. Run the Bot
 
