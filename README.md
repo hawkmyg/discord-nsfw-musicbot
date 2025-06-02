@@ -17,6 +17,7 @@ A modern Discord bot for music playback and powerful server moderation, featurin
 <br>
 <img src="https://www.paypalobjects.com/images/Debit_Credit_APM.svg" alt="cards" height="32"/>
 <br>
+<sub><img src="" alt="paypal" height="16" style="vertical-align:middle;"/></sub>
 
 </div>
 
