@@ -1,9 +1,19 @@
-import { Client, GatewayIntentBits, Partials, REST, Routes, Events, PermissionsBitField } from 'discord.js';
+import { 
+  Client, GatewayIntentBits, Partials, REST, Routes, Events, PermissionsBitField 
+} from 'discord.js';
 import fs from 'fs/promises';
 import path from 'path';
 import nsfwCheck from './nsfw.js';
-import { playCommand, handleMusicButton, handleMusicMenu, commandsCommand, queueCommand } from './music.js';
-import { getConfig, reloadConfig } from './reloadable-config.js';
+import { 
+  playCommand, 
+  handleMusicButton, 
+  handleMusicMenu, 
+  commandsCommand, 
+  queueCommand, 
+  resumeAllQueuesOnStartup,
+  startNowPlayingChecker // for auto-restoring player controls
+} from './music.js';
+import { getConfig, reloadConfig } from './config.js';
 
 // Moderation settings (per guild, saved to disk)
 const SETTINGS_FILE = path.resolve('./moderation_settings.json');
@@ -171,7 +181,7 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-// Register slash commands on startup
+// Register slash commands on startup and resume queues
 client.once(Events.ClientReady, async (c) => {
   await reloadConfig();
   const config = getConfig();
@@ -194,6 +204,10 @@ client.once(Events.ClientReady, async (c) => {
   } catch (e) {
     console.error('Slash command registration error:', e);
   }
+  // Resume music queues and playback after bot restart
+  await resumeAllQueuesOnStartup(client);
+  // Start auto-restoring now playing/player controls
+  startNowPlayingChecker(client);
 });
 
 // Helper to reply and auto-delete after delay
@@ -301,7 +315,9 @@ client.on(Events.InteractionCreate, async interaction => {
           if (interaction.deferred || interaction.replied) {
             await interaction.editReply('Something went wrong with /queue.');
           } else {
-            await interaction.reply({ content: "Something went wrong with /queue." });
+            await interaction.reply({ content: "Something went wrong with /queue.",
+        flags: 1 << 6,
+       });
           }
         } catch (e2) {
           if (e2.code !== 10062 && interaction.channel) await interaction.channel.send('Something went wrong with /queue.');

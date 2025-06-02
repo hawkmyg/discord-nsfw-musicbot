@@ -14,31 +14,54 @@ import {
   StringSelectMenuBuilder,
   EmbedBuilder,
 } from "discord.js";
-import { getConfig, reloadConfig } from "./reloadable-config.js";
+import { getConfig, reloadConfig } from "./config.js";
+import { saveQueueState, loadQueueState } from "./persistent-queue.js";
 
-// Regex for YouTube video and playlist URLs
+// --- Regex ---
 const ytVideoRegex = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{11}/;
 const ytPlaylistRegex = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\/.*(list=)([\w-]+)/;
 
-// Guild-specific maps for queues, players, volumes, etc.
+// --- Guild-specific maps ---
 const queue = new Map();
 const players = new Map();
-const nowPlayingMsg = new Map();
+const nowPlayingMsg = new Map(); // guildId => { messageId, channelId }
 const volumes = new Map();
 const pausedStates = new Map();
+const lastVoiceChannel = new Map();
 
-/**
- * Utility: Send a message and auto-delete it after a delay.
- */
+// --- PERSISTENCE: Load state at startup ---
+const savedQueues = loadQueueState();
+for (const [guildId, data] of Object.entries(savedQueues)) {
+  if (data.queue) queue.set(guildId, data.queue);
+  if (data.volumes !== undefined) volumes.set(guildId, data.volumes);
+  if (data.pausedStates !== undefined) pausedStates.set(guildId, data.pausedStates);
+  if (data.lastVoiceChannelId) lastVoiceChannel.set(guildId, data.lastVoiceChannelId);
+}
+
+function persistAllQueues() {
+  const state = {};
+  for (const [guildId, q] of queue.entries()) {
+    state[guildId] = {
+      queue: q,
+      volumes: volumes.get(guildId) ?? 1.0,
+      pausedStates: pausedStates.get(guildId) ?? false,
+      lastVoiceChannelId: lastVoiceChannel.get(guildId) ?? null,
+    };
+  }
+  saveQueueState(state);
+}
+
 async function sendAndAutoDelete(interaction, msg, delay = 2000) {
   const sent = await interaction.channel.send(msg);
   setTimeout(() => sent.delete().catch(() => {}), delay);
 }
 
-/**
- * Main /play command handler.
- * Enforces text and voice channel restrictions according to config.
- */
+function extractYouTubeId(url) {
+  const regex = /(?:youtube\.com.*(?:\?|&)v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+  const match = url.match(regex);
+  return match ? match[1] : null;
+}
+
 export async function playCommand(client, interaction) {
   try {
     const config = getConfig();
@@ -52,7 +75,7 @@ export async function playCommand(client, interaction) {
     ) {
       return interaction.reply({
         content: `❌ Use this command in <#${REQUEST_TEXT_CHANNEL_ID}> only.`,
-        flags: 1 << 6,
+        ephemeral: true,
       });
     }
 
@@ -63,7 +86,7 @@ export async function playCommand(client, interaction) {
       if (!voiceChannel)
         return interaction.reply({
           content: `❌ Music room not found!`,
-          flags: 1 << 6,
+          ephemeral: true,
         });
 
       if (
@@ -72,7 +95,7 @@ export async function playCommand(client, interaction) {
       ) {
         return interaction.reply({
           content: `❌ Join the music room <#${MUSIC_ROOM_VOICE_ID}> to request songs.`,
-          flags: 1 << 6,
+          ephemeral: true,
         });
       }
     } else {
@@ -80,7 +103,7 @@ export async function playCommand(client, interaction) {
       if (!voiceChannel)
         return interaction.reply({
           content: "Join a voice channel first!",
-          flags: 1 << 6,
+          ephemeral: true,
         });
     }
 
@@ -89,7 +112,7 @@ export async function playCommand(client, interaction) {
     if (!query || typeof query !== "string" || !query.trim()) {
       return interaction.reply({
         content: "You must provide a valid YouTube link or search keywords.",
-        flags: 1 << 6,
+        ephemeral: true,
       });
     }
 
@@ -164,13 +187,19 @@ export async function playCommand(client, interaction) {
     if (!queue.has(guildId)) queue.set(guildId, []);
     queue.get(guildId).push(...songs);
 
+    // Persist the voice channel for resume
+    lastVoiceChannel.set(guildId, voiceChannel.id);
+
+    // --- PERSIST QUEUE ---
+    persistAllQueues();
+
     // --- START PLAYBACK IF NOT ALREADY ACTIVE ---
     if (
       !players.has(guildId) ||
       players.get(guildId)._state.status === AudioPlayerStatus.Idle
     ) {
       pausedStates.set(guildId, false);
-      await playNext(interaction, guildId, voiceChannel);
+      await playNext(client, { channel: interaction.channel }, guildId, voiceChannel);
     }
 
     setTimeout(() => {
@@ -189,9 +218,6 @@ export async function playCommand(client, interaction) {
   }
 }
 
-/**
- * Pagination row for the queue display.
- */
 function queuePaginationRow(page, totalPages) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -207,9 +233,6 @@ function queuePaginationRow(page, totalPages) {
   );
 }
 
-/**
- * Builds a paginated queue message.
- */
 function buildQueueMessage(q, page, itemsPerPage) {
   const totalPages = Math.max(1, Math.ceil(q.length / itemsPerPage));
   const start = page * itemsPerPage;
@@ -218,30 +241,33 @@ function buildQueueMessage(q, page, itemsPerPage) {
   q.slice(start, end).forEach((song, i) => {
     msg += `**#${start + i + 1}:** ${song.title} _(requested by ${song.requestedBy})_\n`;
   });
+  if (msg.length > 1990) msg = msg.slice(0, 1990) + "\n...(truncated)";
   return msg;
 }
 
-/**
- * /queue command handler. Shows a paginated queue.
- */
 export async function queueCommand(client, interaction) {
   const guildId = interaction.guildId;
   const q = queue.get(guildId) || [];
-  if (q.length === 0)
+  if (!q || q.length === 0) {
     return interaction.reply({
       content: "The queue is empty.",
-      flags: 1 << 6,
+      ephemeral: true,
     });
+  }
 
   const itemsPerPage = 10;
   let page = 0;
   const totalPages = Math.ceil(q.length / itemsPerPage);
 
-  await interaction.reply({
-    content: buildQueueMessage(q, page, itemsPerPage),
-    components: [queuePaginationRow(page, totalPages)],
-    flags: 1 << 6,
-  });
+  try {
+    await interaction.reply({
+      content: buildQueueMessage(q, page, itemsPerPage),
+      components: [queuePaginationRow(page, totalPages), musicMenu(q)],
+    });
+  } catch (e) {
+    console.error('[queueCommand] Error at reply:', e);
+    throw e;
+  }
 
   const filter = (btn) =>
     btn.user.id === interaction.user.id &&
@@ -259,16 +285,14 @@ export async function queueCommand(client, interaction) {
     try {
       await interaction.editReply({
         content: buildQueueMessage(q, page, itemsPerPage),
-        components: [queuePaginationRow(page, totalPages)],
-        flags: 1 << 6,
+        components: [queuePaginationRow(page, totalPages), musicMenu(q)],
       });
-    } catch (err) {}
+    } catch (err) {
+      console.error("[queueCommand] Error at editReply:", err);
+    }
   });
 }
 
-/**
- * /commands command handler. Lists available commands.
- */
 export async function commandsCommand(client, interaction) {
   const commandsList = [
     {
@@ -303,13 +327,10 @@ export async function commandsCommand(client, interaction) {
       commandsList
         .map((cmd) => `• **${cmd.name}**\n  ${cmd.desc}`)
         .join("\n\n"),
-    flags: 1 << 6,
+    ephemeral: true,
   });
 }
 
-/**
- * Returns music control buttons row.
- */
 export function musicButtons(volume = 1.0, paused = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -340,60 +361,64 @@ export function musicButtons(volume = 1.0, paused = false) {
   );
 }
 
-/**
- * Returns a select menu for the current queue.
- */
 export function musicMenu(q) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("select_song")
       .setPlaceholder("Queue")
       .addOptions(
-        q.map((track, i) => ({
-          label: `${i + 1}. ${track.title}`,
+        q.slice(0, 25).map((track, i) => ({
+          label: `${i + 1}. ${track.title}`.slice(0, 100),
           value: String(i),
         }))
       )
   );
 }
 
-/**
- * Plays the next song in the queue.
- */
-async function playNext(interaction, guildId, voice) {
+async function playNext(client, context, guildId, voice) {
   const q = queue.get(guildId);
   if (!q || q.length === 0) {
-    // Cleanup when queue is empty
+    // Remove now playing message if exists
     if (nowPlayingMsg.has(guildId)) {
-      const { message } = nowPlayingMsg.get(guildId);
-      if (message && message.deletable) await message.delete().catch(() => {});
+      const { messageId, channelId } = nowPlayingMsg.get(guildId);
+      const guild = client.guilds.cache.get(guildId);
+      if (guild) {
+        const channel = guild.channels.cache.get(channelId);
+        if (channel) {
+          try {
+            const msg = await channel.messages.fetch(messageId);
+            if (msg && msg.deletable) await msg.delete().catch(() => {});
+          } catch (e) {}
+        }
+      }
       nowPlayingMsg.delete(guildId);
     }
     players.delete(guildId);
     getVoiceConnection(guildId)?.destroy();
     pausedStates.set(guildId, false);
+    persistAllQueues();
     return;
   }
 
   const track = q[0];
 
-  // Validate track URL
   if (
     !track.url ||
     typeof track.url !== "string" ||
     (!ytVideoRegex.test(track.url) && !ytPlaylistRegex.test(track.url))
   ) {
-    await interaction.followUp({
-      content: `Track "${track.title || "Unknown"}" has an invalid or unsupported URL and will be skipped. URL: ${track.url}`,
-      flags: 1 << 6,
-    });
+    if (context && context.channel) {
+      await context.channel.send({
+        content: `Track "${track.title || "Unknown"}" has an invalid or unsupported URL and will be skipped. URL: ${track.url}`,
+      });
+    }
     q.shift();
-    return playNext(interaction, guildId, voice);
+    persistAllQueues();
+    return playNext(client, context, guildId, voice);
   }
 
   let resource;
   try {
-    // Try ytdl-core for audio only
     let ytStream = ytdl(track.url, {
       filter: "audioonly",
       quality: "highestaudio",
@@ -404,7 +429,6 @@ async function playNext(interaction, guildId, voice) {
       inlineVolume: true,
     });
   } catch (e1) {
-    // Fallback to play-dl
     try {
       const { stream } = await play.video_stream(track.url);
       resource = createAudioResource(stream, {
@@ -412,20 +436,20 @@ async function playNext(interaction, guildId, voice) {
         inlineVolume: true,
       });
     } catch (e2) {
-      await interaction.followUp({
-        content: `Failed to stream "${track.title}":\n- ytdl-core error: ${e1.message}\n- play-dl error: ${e2.message}`,
-        flags: 1 << 6,
-      });
+      if (context && context.channel) {
+        await context.channel.send({
+          content: `Failed to stream "${track.title}":\n- ytdl-core error: ${e1.message}\n- play-dl error: ${e2.message}`,
+        });
+      }
       q.shift();
-      return playNext(interaction, guildId, voice);
+      persistAllQueues();
+      return playNext(client, context, guildId, voice);
     }
   }
 
-  // Set volume if possible
   const currentVolume = volumes.get(guildId) ?? 1.0;
   if (resource.volume) resource.volume.setVolume(currentVolume);
 
-  // Join voice channel if not already
   let connection = getVoiceConnection(guildId);
   if (!connection) {
     connection = joinVoiceChannel({
@@ -440,7 +464,6 @@ async function playNext(interaction, guildId, voice) {
     });
   }
 
-  // Create audio player if not already
   let player = players.get(guildId);
   if (!player) {
     player = createAudioPlayer();
@@ -449,51 +472,159 @@ async function playNext(interaction, guildId, voice) {
     player.on("error", (error) => {
       console.error("[AudioPlayer Error]:", error);
       queue.get(guildId)?.shift();
-      playNext(interaction, guildId, voice);
+      persistAllQueues();
+      playNext(client, context, guildId, voice);
     });
     player.on(AudioPlayerStatus.Idle, () => {
       queue.get(guildId)?.shift();
-      playNext(interaction, guildId, voice);
+      persistAllQueues();
+      playNext(client, context, guildId, voice);
     });
   }
 
-  // Start playback
   connection.subscribe(player);
   player.play(resource);
   pausedStates.set(guildId, false);
+  persistAllQueues();
 
-  // Remove previous now playing message, if any
+  let channel = null;
+  if (context && context.channel) {
+    channel = context.channel;
+  } else if (nowPlayingMsg.has(guildId)) {
+    const { channelId } = nowPlayingMsg.get(guildId);
+    if (channelId) {
+      const guild = client.guilds.cache.get(guildId);
+      if (guild) channel = guild.channels.cache.get(channelId);
+    }
+  }
+  if (!channel && client.guilds.cache.has(guildId)) {
+    const guild = client.guilds.cache.get(guildId);
+    channel = guild.systemChannel || guild.channels.cache.find(c => c.type === 0);
+  }
+  // Remove previous now playing message if exists
   if (nowPlayingMsg.has(guildId)) {
-    const { message } = nowPlayingMsg.get(guildId);
-    if (message && message.deletable) await message.delete().catch(() => {});
+    const { messageId, channelId } = nowPlayingMsg.get(guildId);
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) {
+      const oldChan = guild.channels.cache.get(channelId);
+      if (oldChan) {
+        try {
+          const oldMsg = await oldChan.messages.fetch(messageId);
+          if (oldMsg && oldMsg.deletable) await oldMsg.delete().catch(() => {});
+        } catch (e) {}
+      }
+    }
     nowPlayingMsg.delete(guildId);
   }
+  if (channel) {
+    const videoId = extractYouTubeId(track.url);
+    const thumbnailUrl = videoId
+      ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
+      : null;
 
-  // Send new now playing embed
-  const embed = new EmbedBuilder()
-    .setColor(0xff5555)
-    .setTitle("🎶 Now Playing")
-    .setDescription(
-      `**${track.title}**\nRequested by: **${track.requestedBy}**\n\n**Volume:** ${Math.round(
-        currentVolume * 100
-      )}%`
-    )
-    .setURL(track.url)
-    .setTimestamp(new Date());
+    const embed = new EmbedBuilder()
+      .setColor(0xff5555)
+      .setTitle("🎶 Now Playing")
+      .setDescription(
+        `**${track.title}**\nRequested by: **${track.requestedBy}**\n\n**Volume:** ${Math.round(
+          currentVolume * 100
+        )}%`
+      )
+      .setURL(track.url);
 
-  const sentMsg = await interaction.channel.send({
-    embeds: [embed],
-    components: [musicButtons(currentVolume, false)],
-  });
-  nowPlayingMsg.set(guildId, {
-    message: sentMsg,
-    channelId: interaction.channel.id,
-  });
+    if (thumbnailUrl) {
+      embed.setThumbnail(thumbnailUrl);
+    }
+
+    const sentMsg = await channel.send({
+      embeds: [embed],
+      components: [musicButtons(currentVolume, false)],
+    });
+    // Save only IDs
+    nowPlayingMsg.set(guildId, {
+      messageId: sentMsg.id,
+      channelId: channel.id,
+    });
+  }
 }
 
-/**
- * Handles music control button interactions.
- */
+// --------- AUTO RESTORE NOW PLAYING CONTROLS IF DELETED ---------
+async function checkNowPlayingMessages(client) {
+  // For every guild with a non-empty queue, ensure a now playing message exists.
+  for (const [guildId, q] of queue.entries()) {
+    if (!q || q.length === 0) continue;
+    let channel, messageExists = false;
+
+    // Try to get the channel and message from nowPlayingMsg map
+    let channelId = null, messageId = null;
+    if (nowPlayingMsg.has(guildId)) {
+      ({ channelId, messageId } = nowPlayingMsg.get(guildId));
+    }
+    // Try to fetch the message if we have an ID
+    if (channelId && messageId) {
+      const guild = client.guilds.cache.get(guildId);
+      if (guild) {
+        channel = guild.channels.cache.get(channelId);
+        if (channel) {
+          try {
+            await channel.messages.fetch(messageId);
+            messageExists = true;
+          } catch (e) {
+            messageExists = false;
+          }
+        }
+      }
+    } else {
+      // No record, try to pick a default text channel
+      const guild = client.guilds.cache.get(guildId);
+      if (guild) {
+        channel = guild.systemChannel || guild.channels.cache.find(c => c.type === 0);
+      }
+    }
+
+    if (!messageExists && channel) {
+      // Post the embed and controls
+      const track = q[0];
+      const currentVolume = volumes.get(guildId) ?? 1.0;
+      const paused = pausedStates.get(guildId) ?? false;
+      const videoId = extractYouTubeId(track.url);
+      const thumbnailUrl = videoId
+        ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
+        : null;
+      const embed = new EmbedBuilder()
+        .setColor(0xff5555)
+        .setTitle("🎶 Now Playing")
+        .setDescription(
+          `**${track.title}**\nRequested by: **${track.requestedBy}**\n\n**Volume:** ${Math.round(
+            currentVolume * 100
+          )}%`
+        )
+        .setURL(track.url);
+      if (thumbnailUrl) embed.setThumbnail(thumbnailUrl);
+
+      try {
+        const sentMsg = await channel.send({
+          embeds: [embed],
+          components: [musicButtons(currentVolume, paused)],
+        });
+        nowPlayingMsg.set(guildId, {
+          messageId: sentMsg.id,
+          channelId: channel.id,
+        });
+      } catch (err) {
+        console.error("Failed to (re-)post now playing:", err);
+      }
+    }
+  }
+}
+
+// Call this on bot ready:
+export function startNowPlayingChecker(client) {
+  setInterval(() => checkNowPlayingMessages(client), 30000);
+}
+
+// ---------------------------------------------------------------
+
 export async function handleMusicButton(interaction) {
   const guildId = interaction.guildId;
   const player = players.get(guildId);
@@ -504,7 +635,7 @@ export async function handleMusicButton(interaction) {
   if (!player)
     return interaction.reply({
       content: "Nothing is playing.",
-      flags: 1 << 6,
+      ephemeral: true,
     });
 
   try {
@@ -513,6 +644,8 @@ export async function handleMusicButton(interaction) {
     if (e.code === 10062) return;
     throw e;
   }
+
+  let channel = interaction.channel;
 
   if (interaction.customId === "pause_resume") {
     if (!wasPaused) {
@@ -524,11 +657,15 @@ export async function handleMusicButton(interaction) {
       pausedStates.set(guildId, false);
       await sendAndAutoDelete(interaction, { content: "Resumed." });
     }
+    persistAllQueues();
   }
   if (interaction.customId === "skip") {
     queue.get(guildId)?.shift();
     player.stop();
+    await playNext(interaction.client, { channel }, guildId, interaction.member.voice.channel ?? channel);
     await sendAndAutoDelete(interaction, { content: "Skipped." });
+    persistAllQueues();
+    return;
   }
   if (interaction.customId === "stop") {
     queue.set(guildId, []);
@@ -536,12 +673,23 @@ export async function handleMusicButton(interaction) {
     getVoiceConnection(guildId)?.destroy();
     players.delete(guildId);
     pausedStates.set(guildId, false);
+    // Remove now playing message if exists
     if (nowPlayingMsg.has(guildId)) {
-      const { message } = nowPlayingMsg.get(guildId);
-      if (message && message.deletable) await message.delete().catch(() => {});
+      const { messageId, channelId } = nowPlayingMsg.get(guildId);
+      const guild = interaction.client.guilds.cache.get(guildId);
+      if (guild) {
+        const channel = guild.channels.cache.get(channelId);
+        if (channel) {
+          try {
+            const msg = await channel.messages.fetch(messageId);
+            if (msg && msg.deletable) await msg.delete().catch(() => {});
+          } catch (e) {}
+        }
+      }
       nowPlayingMsg.delete(guildId);
     }
     await sendAndAutoDelete(interaction, { content: "Stopped and disconnected." });
+    persistAllQueues();
   }
   if (interaction.customId === "volume_down") {
     currentVol = Math.max(0.05, currentVol - 0.1);
@@ -554,6 +702,7 @@ export async function handleMusicButton(interaction) {
     await sendAndAutoDelete(interaction, {
       content: `Volume: ${Math.round(currentVol * 100)}%`,
     });
+    persistAllQueues();
   }
   if (interaction.customId === "volume_up") {
     currentVol = Math.min(2.0, currentVol + 0.1);
@@ -566,23 +715,28 @@ export async function handleMusicButton(interaction) {
     await sendAndAutoDelete(interaction, {
       content: `Volume: ${Math.round(currentVol * 100)}%`,
     });
+    persistAllQueues();
   }
 
-  // Update volume and button UI if changed
   if (
     (didChangeVol || interaction.customId === "pause_resume") &&
     nowPlayingMsg.has(guildId)
   ) {
-    const { message } = nowPlayingMsg.get(guildId);
+    const { messageId, channelId } = nowPlayingMsg.get(guildId);
+    const guild = interaction.client.guilds.cache.get(guildId);
+    if (!guild) return;
+    const channel = guild.channels.cache.get(channelId);
+    if (!channel) return;
     try {
-      await message.edit({
+      const msg = await channel.messages.fetch(messageId);
+      await msg.edit({
         components: [
           musicButtons(currentVol, pausedStates.get(guildId) ?? false),
         ],
       });
       if (didChangeVol) {
-        const embed = message.embeds[0]
-          ? EmbedBuilder.from(message.embeds[0])
+        const embed = msg.embeds[0]
+          ? EmbedBuilder.from(msg.embeds[0])
           : new EmbedBuilder().setTitle("🎶 Now Playing");
         if (embed.data && embed.data.description) {
           embed.setDescription(
@@ -591,47 +745,39 @@ export async function handleMusicButton(interaction) {
               `**Volume:** ${Math.round(currentVol * 100)}%`
             )
           );
-          await message.edit({ embeds: [embed] });
+          await msg.edit({ embeds: [embed] });
         }
       }
     } catch (e) {}
   }
 }
 
-/**
- * Handles song selection menu interaction.
- */
 export async function handleMusicMenu(interaction) {
   const guildId = interaction.guildId;
   const selected = interaction.values[0];
   const q = queue.get(guildId);
 
   if (!q || q.length === 0) {
-    return interaction.reply({ content: "Queue empty.", flags: 1 << 6 });
+    return interaction.reply({ content: "Queue empty.", ephemeral: true });
   }
 
   const idx = Number(selected);
   if (isNaN(idx) || idx < 0 || idx >= q.length) {
-    return interaction.reply({ content: "Invalid selection.", flags: 1 << 6 });
+    return interaction.reply({ content: "Invalid selection.", ephemeral: true });
   }
 
   const track = q[idx];
   if (!track) {
-    return interaction.reply({ content: "Track not found.", flags: 1 << 6 });
+    return interaction.reply({ content: "Track not found.", ephemeral: true });
   }
 
   await interaction.reply({
     content: `Selected: **${track.title}** (requested by ${track.requestedBy})`,
+    ephemeral: true,
   });
 }
 
-/**
- * Handler for the /reload command.
- * Only allows administrators to reload the config.
- * Auto-deletes the success message after 2 seconds.
- */
 export async function handleReloadCommand(client, interaction) {
-  // Only allow admins:
   const member = await interaction.guild.members.fetch(interaction.user.id);
   if (!member.permissions.has("Administrator")) {
     await interaction.reply({
@@ -642,12 +788,10 @@ export async function handleReloadCommand(client, interaction) {
   }
   try {
     await reloadConfig();
-    // Send a PUBLIC message
     const confirmation = await interaction.reply({
       content: "✅ Configuration reloaded!",
       fetchReply: true
     });
-    // Delete after 2 seconds
     setTimeout(() => {
       if (confirmation && confirmation.deletable) {
         confirmation.delete().catch((e) => console.error("Delete error:", e));
@@ -659,4 +803,36 @@ export async function handleReloadCommand(client, interaction) {
       ephemeral: true
     });
   }
+}
+
+export async function resumeAllQueuesOnStartup(client) {
+  for (const [guildId, q] of queue.entries()) {
+    if (q && q.length > 0 && lastVoiceChannel.has(guildId)) {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) continue;
+      const channelId = lastVoiceChannel.get(guildId);
+      let textChannel = null;
+      textChannel = guild.systemChannel || guild.channels.cache.find(c => c.type === 0);
+      const voice = guild.channels.cache.get(channelId);
+      if (!voice || (voice.type !== 2 && voice.type !== "GUILD_VOICE")) continue;
+      await playNext(client, { channel: textChannel }, guildId, voice);
+    }
+  }
+}
+
+// ---- MAIN INTERACTION DISPATCH ----
+
+export async function onInteractionCreate(client, interaction) {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (interaction.commandName === "play") {
+    return playCommand(client, interaction);
+  }
+  if (interaction.commandName === "queue") {
+    return queueCommand(client, interaction);
+  }
+  if (interaction.commandName === "commands") {
+    return commandsCommand(client, interaction);
+  }
+  // ...add other command handlers as needed
 }
