@@ -15,6 +15,8 @@ A modern Discord bot for music playback and powerful server moderation, featurin
 <!-- PayPal Button for Markdown users: use the link below. The button itself is only for HTML. -->
 [![Buy Now](https://www.paypalobjects.com/en_US/i/btn/btn_buynow_LG.gif)](https://www.paypal.com/ncp/payment/GUB8H62HUYHB2)
 <br>
+<img src="https://www.paypalobjects.com/images/Debit_Credit_APM.svg" alt="cards" height="32"/>
+<br>
 
 </div>
 
